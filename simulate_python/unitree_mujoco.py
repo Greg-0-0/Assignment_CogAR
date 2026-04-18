@@ -41,12 +41,15 @@ def SimulationThread():
     ChannelFactoryInitialize(config.DOMAIN_ID, config.INTERFACE)
     unitree = UnitreeSdk2Bridge(mj_model, mj_data)
 
+    print("Bridge initialized")
+
     if config.USE_JOYSTICK:
         unitree.SetupJoystick(device_id=0, js_type=config.JOYSTICK_TYPE)
     if config.PRINT_SCENE_INFORMATION:
         unitree.PrintSceneInformation()
 
     while viewer.is_running():
+
         step_start = time.perf_counter()
 
         locker.acquire()
@@ -69,6 +72,7 @@ def SimulationThread():
 
 def PhysicsViewerThread():
     while viewer.is_running():
+
         locker.acquire()
         viewer.sync()
         locker.release()

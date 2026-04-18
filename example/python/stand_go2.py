@@ -1,6 +1,16 @@
 import time
 import sys
 import numpy as np
+import os
+
+# Get the directory of the current script
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# Construct the path to the simulate_python directory
+simulate_python_dir = os.path.join(current_dir, '..', '..', 'simulate_python')
+# Add the simulate_python directory to the system path
+sys.path.append(simulate_python_dir)
+
+import config
 
 from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber
 from unitree_sdk2py.core.channel import ChannelFactoryInitialize
@@ -28,10 +38,14 @@ input("Press enter to start")
 
 if __name__ == '__main__':
 
-    if len(sys.argv) <2:
-        ChannelFactoryInitialize(1, "lo")
-    else:
-        ChannelFactoryInitialize(0, sys.argv[1])
+    
+    #if len(sys.argv) < 2:
+        # If no network card is input, use the simulated domain id and the local network card
+    #    ChannelFactoryInitialize(1, "lo")
+    #else:
+        # Otherwise, use the specified network card
+    #    ChannelFactoryInitialize(0, sys.argv[1])
+    ChannelFactoryInitialize(config.DOMAIN_ID, config.INTERFACE)
 
     # Create a publisher to publish the data defined in UserData class
     pub = ChannelPublisher("rt/lowcmd", LowCmd_)
