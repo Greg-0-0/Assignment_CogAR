@@ -11,7 +11,10 @@ What to do: Develop and evaluate basic reaching, grasping, and manipulation capa
 6. If feasible, compare two manipulation strategies, for example: purely kinematic control, feedback-based or learned control
 
 Software needed: MuJoCo, Python, inverse kinematics libraries, Unitree G1 EDU model resources, NumPy, Matplotlib
+
 Research needed: Humanoid manipulation, reaching and grasping control, inverse kinematics for humanoid robots, whole-body coordination, manipulation benchmarking in simulation
+
 Deliverables: Working G1 EDU manipulation setup in MuJoCo, reaching and grasping controller, benchmark task scenarios, quantitative evaluation report, demo videos
 
 Initial repo from: https://github.com/unitreerobotics/unitree_mujoco
+- The robot itself features 29 degrees of freedom (DOF). Equipped with the Dex 3-1 hands, the total DOF increases to 43. The Dex 3-1 version is F-1515-214.
