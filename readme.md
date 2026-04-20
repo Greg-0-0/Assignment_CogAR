@@ -1,4 +1,4 @@
-# Subgroup D1 - Assignment 9
+# (D2) Subgroup D1 - Assignment 9
 G1 EDU Grasping and Manipulation Controller (SIMULATION)
 Student id: 5658523
 
