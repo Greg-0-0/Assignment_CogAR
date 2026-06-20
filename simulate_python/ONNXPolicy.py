@@ -3,6 +3,7 @@ import onnxruntime as ort
 
 class ONNXPolicy:
   """ONNX policy wrapper for CPU inference."""
+  '''Allows to apply the "walker" policy, used to balance the G1 EDU model.'''
 
   def __init__(self, model_path: str):
     sess_options = ort.SessionOptions()

@@ -4,12 +4,11 @@ import numpy as np
 import mujoco
 
 # --------------------------------------------------------------------------- #
-# G1 Controller (walker + IK arm/gripper support)
+# G1 Controller ("walker" policy application + IK arm/gripper support)
 # --------------------------------------------------------------------------- #
 class G1Controller:
-  """Full G1 controller with locomotion mode switching and arm control."""
-  
-  KEY_COMMA_GRIP = 44  # , = Grip toggle
+  """G1 robot controller with focus on right arm and right hand + 
+     balancing policy application on lower body parts(legs - ankles) and torso."""
 
   def __init__(self, model, data, walker, config, obj_name):
     self.model = model
@@ -18,7 +17,7 @@ class G1Controller:
     self.config = config
     self.obj_name = obj_name
 
-    # Walk state
+    # Data for balancing policy (standing state)
     self.lin_vel_x = 0.0
     self.lin_vel_y = 0.0
     self.ang_vel_z = 0.0
@@ -604,12 +603,3 @@ class G1Controller:
     self.post_grasp_lift_start_world = None
     self.post_grasp_lift_final_world = None
     print(f"[GRIP] Right hand: {'CLOSED' if self.grip_closed else 'OPEN'}")
-
-  # --- Keyboard ---
-  def key_callback(self, key: int) -> None:
-    # Grip toggle (works in any mode)
-    if key == self.KEY_COMMA_GRIP:
-      if not self.manual_grip_enabled:
-        return
-      self.set_grip_state(not self.grip_closed)
-      return
