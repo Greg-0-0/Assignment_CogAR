@@ -1,0 +1,93 @@
+<mujoco model="g1_table_red_block">
+  <!--
+    G1 Table Red Block scene — converted from LuckyEngine .hscene
+    Contains: G1 robot, ground plane, table, red cylindrical block (freejoint),
+              head camera, wrist camera, overhead camera, tracking camera.
+  -->
+
+  <include file="g1.xml"/>
+
+  <statistic center="0.2 0 0.5" extent="2"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="120" elevation="-20"/>
+  </visual>
+
+  <asset>
+    <!-- Skybox -->
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0"
+             width="512" height="3072"/>
+    <!-- Light grey floor -->
+    <texture type="2d" name="groundplane" builtin="flat"
+             rgb1="0.75 0.75 0.75" rgb2="0.7 0.7 0.7"
+             mark="random" markrgb="0.72 0.72 0.72"
+             width="512" height="512"/>
+    <material name="groundplane" texture="groundplane" texuniform="true"
+              texrepeat="8 8" reflectance="0.1"/>
+    <!-- Table materials -->
+      <material name="table_wood" rgba="0.55 0.35 0.2 1" specular="0.3" shininess="0.5"/>
+      <material name="table_blue" rgba="0.1 0.12 0.3 1" specular="0.3" shininess="0.5"/>
+            <!-- Task object materials -->
+                  <material name="mug_ceramic" rgba="0.9 0.9 0.92 1" specular="0.55" shininess="0.8"/>
+                  <material name="coaster_cork" rgba="0.55 0.4 0.22 1" specular="0.1" shininess="0.2"/>
+  </asset>
+
+  <worldbody>
+    <!-- Ground plane -->
+    <geom name="ground" type="plane" size="10 10 0.01" material="groundplane"
+          contype="1" conaffinity="1"/>
+
+    <!-- Ambient light -->
+    <light pos="0 0 4" dir="0 0 -1" diffuse="0.7 0.7 0.7" specular="0.3 0.3 0.3"
+           castshadow="true"/>
+    <light pos="-2 2 3" dir="0.5 -0.5 -1" diffuse="0.3 0.3 0.3" specular="0.1 0.1 0.1"/>
+
+    <!-- Table (static), in front of the robot -->
+    <!-- Long side faces the robot along world Y. -->
+    <body name="table" pos="-0.2 -0.12 0.713">
+      <geom name="table_top" type="box" size="0.25 0.4 0.02" material="table_wood"
+            contype="1" conaffinity="1" friction="1 0.1 0.01" mass="10"/>
+      <!-- Table legs -->
+      <geom name="table_leg_1" type="cylinder" size="0.025 0.345" pos="0.2 0.35 -0.365"
+            rgba="0.4 0.25 0.15 1" contype="1" conaffinity="1" mass="1"/>
+      <geom name="table_leg_2" type="cylinder" size="0.025 0.345" pos="-0.2 0.35 -0.365"
+            rgba="0.4 0.25 0.15 1" contype="1" conaffinity="1" mass="1"/>
+      <geom name="table_leg_3" type="cylinder" size="0.025 0.345" pos="0.2 -0.35 -0.365"
+            rgba="0.4 0.25 0.15 1" contype="1" conaffinity="1" mass="1"/>
+      <geom name="table_leg_4" type="cylinder" size="0.025 0.345" pos="-0.2 -0.35 -0.365"
+            rgba="0.4 0.25 0.15 1" contype="1" conaffinity="1" mass="1"/>
+    </body>
+
+    <!-- Mug-like object in front of robot (same x,y as scene1 blue cube) -->
+      <body name="mug_object" pos="-0.25 -0.02 0.773" quat="0.7071068 0 0 -0.7071068">
+      <freejoint name="mug_object_joint"/>
+      <geom name="mug_body" type="cylinder" size="0.033 0.055"
+            material="mug_ceramic" density="10"
+            contype="1" conaffinity="1" friction="2.2 0.15 0.02"/>
+      <geom name="mug_handle_top" type="capsule" fromto="0.031 0.0 0.042 0.068 0.0 0.050" size="0.006"
+            material="mug_ceramic" density="10"
+            contype="1" conaffinity="1" friction="2.2 0.15 0.02"/>
+      <geom name="mug_handle_outer" type="capsule" fromto="0.072 0.0 0.048 0.072 0.0 -0.038" size="0.0058"
+            material="mug_ceramic" density="10"
+            contype="1" conaffinity="1" friction="2.2 0.15 0.02"/>
+      <geom name="mug_handle_bottom" type="capsule" fromto="0.068 0.0 -0.038 0.031 0.0 -0.030" size="0.006"
+            material="mug_ceramic" density="10"
+            contype="1" conaffinity="1" friction="2.2 0.15 0.02"/>
+      <geom name="mug_bottom_cap" type="box" size="0.026 0.026 0.002" pos="0 0 -0.055"
+            material="mug_ceramic" density="10"
+            contype="1" conaffinity="1" friction="3 0.1 0.01"/>
+    </body>
+
+    <!-- Coaster on right-hand side -->
+    <body name="coaster" pos="-0.21 -0.2 0.736">
+      <geom name="coaster_geom" type="cylinder" size="0.045 0.003"
+            material="coaster_cork"
+            contype="1" conaffinity="1" friction="1.8 0.1 0.01"/>
+      <geom name="coaster_top_cap" type="box" size="0.038 0.038 0.001" pos="0 0 0.003"
+            material="mug_ceramic" density="10"
+            contype="1" conaffinity="1" friction="3 0.1 0.01"/>
+    </body>
+  </worldbody>
+</mujoco>
