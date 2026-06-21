@@ -11,23 +11,22 @@ class G1Controller:
      balancing policy application on lower body parts(legs - ankles) and torso."""
 
   def __init__(self, model, data, walker, config, obj_name):
-    self.model = model
-    self.data = data
-    self.walker_policy = walker
-    self.config = config
-    self.obj_name = obj_name
+    self.model = model # MjModel -> static robot model loaded from the xml file
+    self.data = data # MjData -> dynamic robot model state defined from MjModel and updated at each simulation step
+    self.walker_policy = walker # ONNX policy for balancing the robot (legs, torso, waist)
+    self.config = config # Configuration dictionary loaded from model_config.json (used by walker policy)
+    self.obj_name = obj_name # Name of the object to be grasped first (used for finger actuator targets -> cache_finger_actuators),
+                             # depends on the benchmark choosen
 
-    # Data for balancing policy (standing state)
+    # Data for balancing policy (standing state -> no velocities)
     self.lin_vel_x = 0.0
     self.lin_vel_y = 0.0
     self.ang_vel_z = 0.0
-    self.vel_step_linear = 0.2
-    self.vel_step_angular = 0.2
-    self.vel_max_linear = 2.0
-    self.vel_max_angular = 1.0
 
     # Frozen arm position — holds the last commanded arm position when IK is idle.
-    self.frozen_arm_pos = None  # None = use defaults, array = hold position
+    # Used at the beginning, before applying IK target postions to avoid 
+    # the arm slamming onto the table (absence of controls).
+    self.frozen_arm_pos = None
 
     self.last_action = np.zeros(29, dtype=np.float32)
 
@@ -36,35 +35,29 @@ class G1Controller:
     self.grip_close_time = None
     self.grip_transition_duration_s = 1.0
     self.grip_transition_start_time = None
-    self.grip_alpha_start = 0.0
-    self.grip_alpha_goal = 0.0
-    self.manual_grip_enabled = True
+    # Grip alpha [0-1] for smooth interpolation between open and closed states when applying finger positions.
+    self.grip_alpha_start = 0.0 # 0.0 if grip is closing, 1.0 if grip is opening
+    self.grip_alpha_goal = 0.0  # 1.0 if grip is closing, 0.0 if grip is opening
+
+    # Variables for timing correctly the lift action after closing the gripper
     self.post_grasp_lift_active = False
-    self.post_grasp_lift_target_world = None
-    self.post_grasp_lift_start_time = None
+    self.post_grasp_lift_target_world = None # Target position for lifting action, ranges from post_grasp_lift_start_world to post_grasp_lift_final_world
+    self.post_grasp_lift_start_time = None # Used for smooth interpolation from start to final grasping position, 
+                                           # and for delaying the lift action after grasping
     self.post_grasp_lift_start_world = None
     self.post_grasp_lift_final_world = None
 
-    # These joints are commanded by local direct ctrl writes.
-    self.dds_controlled_joints = {
-      "right_shoulder_pitch_joint",
-      "right_shoulder_roll_joint",
-      "right_shoulder_yaw_joint",
-      "right_elbow_joint",
-      "right_wrist_roll_joint",
-      "right_wrist_pitch_joint",
-      "right_wrist_yaw_joint",
-    }
-
+    # Setting up structural and control variables for the robot model (joint mappings, arm mappings, actuator ids, finger actuators)
     self._build_joint_mappings()
     self._build_arm_mappings()
-    self._compute_pd_gains()
     self._cache_actuator_ids()
     self._cache_finger_actuators(self.obj_name)
 
   def _build_joint_mappings(self):
     self.joint_names = self.config["joint_names"]
     self.num_joints = len(self.joint_names)
+
+    # Mapping from joint name to qpos and qvel indices in MjData.qpos and MjData.qvel -> used by walker policy (joint states retrieved in step function)
     self.joint_qpos_indices = {n: 7 + i for i, n in enumerate(self.joint_names)}
     self.joint_qvel_indices = {n: 6 + i for i, n in enumerate(self.joint_names)}
 
@@ -103,30 +96,6 @@ class G1Controller:
     self.right_palm_site_id = mujoco.mj_name2id(
       self.model, mujoco.mjtObj.mjOBJ_SITE, "right_palm"
     )
-
-  def _compute_pd_gains(self):
-    S5020, D5020, E5020 = 14.2506, 0.9072, 25.0
-    S7520_14, D7520_14, E7520_14 = 40.1792, 2.5579, 88.0
-    S7520_22, D7520_22, E7520_22 = 99.0984, 6.3088, 139.0
-    S4010, D4010, E4010 = 16.7783, 1.0681, 5.0
-
-    self.kp = np.zeros(self.num_joints, dtype=np.float32)
-    self.kd = np.zeros(self.num_joints, dtype=np.float32)
-    self.effort_limit = np.zeros(self.num_joints, dtype=np.float32)
-
-    for i, name in enumerate(self.joint_names):
-      if "elbow" in name or "shoulder" in name or "wrist_roll" in name:
-        self.kp[i], self.kd[i], self.effort_limit[i] = S5020, D5020, E5020
-      elif "hip_pitch" in name or "hip_yaw" in name or name == "waist_yaw_joint":
-        self.kp[i], self.kd[i], self.effort_limit[i] = S7520_14, D7520_14, E7520_14
-      elif "hip_roll" in name or "knee" in name:
-        self.kp[i], self.kd[i], self.effort_limit[i] = S7520_22, D7520_22, E7520_22
-      elif "wrist_pitch" in name or "wrist_yaw" in name:
-        self.kp[i], self.kd[i], self.effort_limit[i] = S4010, D4010, E4010
-      elif "ankle" in name or name in ("waist_pitch_joint", "waist_roll_joint"):
-        self.kp[i], self.kd[i], self.effort_limit[i] = S5020 * 2, D5020 * 2, E5020 * 2
-      else:
-        self.kp[i], self.kd[i], self.effort_limit[i] = S5020, D5020, E5020
 
   # --- State helpers ---
   def _get_base_pose(self):
@@ -388,7 +357,7 @@ class G1Controller:
       lin_vel, ang_vel, proj_gravity, joint_pos, joint_vel, self.last_action, cmd,
     ]).astype(np.float32)
 
-    # Walker policy (handles legs, waist and torso for standing)
+    # Walker policy action (handles legs, waist and torso for standing)
     action = self.walker_policy(obs)
     target_pos = self.default_joint_pos + action * self.action_scales
 
@@ -427,83 +396,6 @@ class G1Controller:
     """Cache right hand finger actuator IDs and their closed targets."""
     # (actuator_id, open_position, closed_position)
     self.right_finger_actuators = []
-    '''
-    for blue cube
-    finger_closed = {
-      "right_hand_thumb_0_joint":  0.0,     # curl thumb inward
-      "right_hand_thumb_1_joint": -0.3,     # flex thumb
-      "right_hand_thumb_2_joint": -0.6,     # curl thumb tip
-      "right_hand_index_0_joint":  0.9,     # curl index
-      "right_hand_index_1_joint":  0.9,     # curl index tip
-      "right_hand_middle_0_joint": 0.9,     # curl middle
-      "right_hand_middle_1_joint": 0.9,     # curl middle tip
-    }
-    with:
-    ik_target_x_offset_world = 0.02 # offset along x direction cube center
-    ik_target_y_offset_world = 0.01 # offset along y direction cube center
-    ik_target_z_offset_world = 0.08  # offset above cube center
-    finger_closed = {
-      "right_hand_thumb_0_joint":  0.0,     # curl thumb inward
-      "right_hand_thumb_1_joint": -0.4,     # flex thumb
-      "right_hand_thumb_2_joint": -0.7,     # curl thumb tip
-      "right_hand_index_0_joint":  0.85,     # curl index
-      "right_hand_index_1_joint":  0.85,     # curl index tip
-      "right_hand_middle_0_joint": 0.85,     # curl middle
-      "right_hand_middle_1_joint": 0.85,     # curl middle tip
-    }
-    with:
-    ik_target_x_offset_world = 0.01 # offset along x direction cube center
-    ik_target_y_offset_world = 0.0 # offset along y direction cube center
-    ik_target_z_offset_world = 0.08  # offset above cube center
-    and:
-    roll_local_x = np.array([
-    [1.0, 0.0, 0.0],
-    [0.0, cr, -sr],
-    [0.0, sr,  cr],
-    ], dtype=np.float32)
-
-    for red cylinder
-    finger_closed = {
-      "right_hand_thumb_0_joint":  0.2,     # curl thumb inward
-      "right_hand_thumb_1_joint": -0.75,     # flex thumb
-      "right_hand_thumb_2_joint": -1.4,     # curl thumb tip
-      "right_hand_index_0_joint":  1.5,     # curl index
-      "right_hand_index_1_joint":  1.5,     # curl index tip
-      "right_hand_middle_0_joint": 1.5,     # curl middle
-      "right_hand_middle_1_joint": 1.5,     # curl middle tip
-    }
-    with:
-    ik_target_x_offset_world = 0.02 # offset along x direction cylinder center
-    ik_target_y_offset_world = -0.05 # no offset along y direction cylinder center
-    ik_target_z_offset_world = 0.0  # no offset above cylinder center
-    and:
-    no_rotation = np.array([
-    [1.0, 0.0, 0.0],
-    [0.0, 1.0, 0.0],
-    [0.0, 0.0, 1.0],
-    ], dtype=np.float32)
-
-    for frustum:
-    finger_closed = {
-      "right_hand_thumb_0_joint":  0.0,     # curl thumb inward
-      "right_hand_thumb_1_joint": -0.1,     # flex thumb
-      "right_hand_thumb_2_joint": -0.9,     # curl thumb tip
-      "right_hand_index_0_joint":  0.6,     # curl index
-      "right_hand_index_1_joint":  1.46,     # curl index tip
-      "right_hand_middle_0_joint": 0.6,     # curl middle
-      "right_hand_middle_1_joint": 1.44,     # curl middle tip
-    }
-    with:
-    ik_target_x_offset_world = 0.0245 # offset along x direction cylinder center
-    ik_target_y_offset_world = 0.0 # no offset along y direction cylinder center
-    ik_target_z_offset_world = 0.105  # no offset above cylinder center
-    and: 
-    roll_local_x = np.array([
-    [1.0, 0.0, 0.0],
-    [0.0, cr, -sr],
-    [0.0, sr,  cr],
-    ], dtype=np.float32)
-    '''
     if obj_name == "red_cylinder":
       # Red cylinder
       finger_closed = {
@@ -547,40 +439,50 @@ class G1Controller:
         self.right_finger_actuators.append((aid, open_val, closed_val))
 
   def apply_pd_control(self, target_pos):
+    """ Apply target positions to all joints (right arm for reaching target, grip actuators for hand manipulation
+        and rest of the body for balance), which are translated into PD control signals by MuJoCo. """
     for i, act_id in enumerate(self.actuator_ids):
-      if self.joint_names[i] in self.dds_controlled_joints:
-        continue
       if act_id >= 0:
         self.data.ctrl[act_id] = target_pos[i]
 
-    # Apply grip
+    # Apply grip:
+    # at each control loop the interpolation value between the two configurations (open - close hand)
+    # is passed to smooth the process (initial call to _get_grip_alpha for setting value was in _start_grip_transition).
     grip_alpha = self._get_grip_alpha()
     for act_id, open_val, closed_val in self.right_finger_actuators:
+      # Applying interpolated value
       self.data.ctrl[act_id] = (1.0 - grip_alpha) * open_val + grip_alpha * closed_val
 
   def _get_grip_alpha(self) -> float:
     """Return smoothed [0..1] grip command interpolation."""
     if self.grip_transition_start_time is None:
+      # No transition in progress, return the current goal value
       return float(self.grip_alpha_goal)
 
     elapsed = time.time() - self.grip_transition_start_time
     if self.grip_transition_duration_s <= 1e-6:
+      # Transition duration is nearly zero, snap to goal value -> end transition
       alpha = float(self.grip_alpha_goal)
       self.grip_transition_start_time = None
       self.grip_alpha_start = alpha
       self.grip_alpha_goal = alpha
       return alpha
 
+    # Compute interpolation factor(alpha) between start and goal.
     t = float(np.clip(elapsed / self.grip_transition_duration_s, 0.0, 1.0))
     alpha = (1.0 - t) * self.grip_alpha_start + t * self.grip_alpha_goal
     if t >= 1.0:
+      # Transition complete, reset transition parameters -> grip_transition_duration_s is 1.0s by default,
+      # but for slower motions can be set to 2.5 (mug grasping)
       self.grip_transition_start_time = None
       self.grip_alpha_start = float(alpha)
       self.grip_alpha_goal = float(alpha)
     return float(alpha)
 
   def _start_grip_transition(self, close_target: bool) -> None:
-    current_alpha = self._get_grip_alpha()
+    """ Set the grip transition parameters to start a smooth interpolation between 
+        open and closed states, or vice versa."""
+    current_alpha = self._get_grip_alpha() # Initial call to _get_grip_alpha for starting the transition (other is in apply_pd_control)
     self.grip_alpha_start = current_alpha
     self.grip_alpha_goal = 1.0 if close_target else 0.0
     self.grip_transition_start_time = time.time()
@@ -588,15 +490,20 @@ class G1Controller:
   def set_grip_state(self, close_target: bool) -> None:
     """Set right hand grip state explicitly and reset lift state when toggled."""
     if self.grip_closed == close_target:
+      # State already up to date, no changes to be done
       return
 
+    # Updating state -> starting transition
     self.grip_closed = close_target
     self._start_grip_transition(self.grip_closed)
     if self.grip_closed:
+      # Set when closing starts, used to delay lifting until grasping action is complete
       self.grip_close_time = time.time()
     else:
+      # Hand is opening
       self.grip_close_time = None
 
+    # Resetting lift state on any grip toggle to avoid stale state (when needed variables are overwritten)
     self.post_grasp_lift_active = False
     self.post_grasp_lift_target_world = None
     self.post_grasp_lift_start_time = None

@@ -146,10 +146,6 @@ viewer = mujoco.viewer.launch_passive(mj_model, mj_data, key_callback=on_key)
 def SimulationThread():
   global mj_data, mj_model
 
-  # Right arm is controlled through target position provided by IK.
-  # Target joint positions are sent to actuators via apply_pd_control.
-  ctrl.dds_controlled_joints = set()
-
   right_arm_joint_refs = _joint_state_refs(mj_model, ctrl.right_arm_joint_names)
   right_arm_q_des = np.array([
     float(mj_data.qpos[right_arm_joint_refs[name][0]])
@@ -337,6 +333,8 @@ def SimulationThread():
           elif is_scene2_task and (task2_step == 7) and (task2_distancing_target_world is not None):
             target_world = task2_distancing_target_world.copy()
           elif ctrl.post_grasp_lift_active and (ctrl.post_grasp_lift_target_world is not None):
+            # Handling post-grasp lift by blending from lift start to lift final target to provide 
+            # a smooth transition and avoid IK jumps at lift start/end (initially post_grasp_lift_target_world=post_grasp_lift_start_world).
             if (
               (ctrl.post_grasp_lift_start_time is not None)
               and (ctrl.post_grasp_lift_start_world is not None)
@@ -588,7 +586,7 @@ def SimulationThread():
                   "right_hand_middle_1_joint": 0.7,  # curl middle tip
                 }
                 ctrl._cache_finger_actuators("mug_object", open_targets=mug_release_open_targets)
-                ctrl.grip_transition_duration_s = 2.5
+                ctrl.grip_transition_duration_s = 2.5 # slow partial opening to avoid mug tipping (normally 1.0s)
                 task2_opening_target_world = mj_data.site_xpos[ctrl.right_palm_site_id].copy()
                 task2_opening_target_world[0] -= 0.01
                 task2_opening_target_world[1] -= 0.013
