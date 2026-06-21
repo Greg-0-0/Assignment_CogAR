@@ -54,22 +54,29 @@ class G1Controller:
     self._cache_finger_actuators(self.obj_name)
 
   def _build_joint_mappings(self):
-    self.joint_names = self.config["joint_names"]
+    """ Builds mappings from joint names to joint information (qpos/qvel indices), 
+        and store default positions and action scales. """
+
+    # List of joint names in the same order as the model_config.json definition (also used for walker policy observation ordering)
+    self.joint_names = self.config["joint_names"] 
     self.num_joints = len(self.joint_names)
 
     # Mapping from joint name to qpos and qvel indices in MjData.qpos and MjData.qvel -> used by walker policy (joint states retrieved in step function)
     self.joint_qpos_indices = {n: 7 + i for i, n in enumerate(self.joint_names)}
     self.joint_qvel_indices = {n: 6 + i for i, n in enumerate(self.joint_names)}
 
+    # Storing default joint positions for initial robot configuration and used by the walker policy to balance the robot (standing state) (step function)
     self.default_joint_pos = np.zeros(self.num_joints, dtype=np.float32)
     for name, value in self.config["default_joint_pos"].items():
       if name in self.joint_names:
         self.default_joint_pos[self.joint_names.index(name)] = value
 
+    # Storing action scales for each joint, used to scale the walker policy output to the default joint position (targets) (step function)
     self.action_scales = np.array(
       [self.config["action_scales"][n] for n in self.joint_names], dtype=np.float32
     )
 
+    # Saving arm indices to apply default positions to right arm, and mainitain last right arm joint positions.
     arm_patterns = ["shoulder_pitch", "shoulder_roll", "shoulder_yaw",
                     "elbow", "wrist_roll", "wrist_pitch", "wrist_yaw"]
     self.arm_indices = []
@@ -78,36 +85,45 @@ class G1Controller:
         self.arm_indices.append(i)
 
   def _build_arm_mappings(self):
+    """ Builds mappings for right arm joints and right palm site(EE). """
+
     self.right_arm_joint_names = [
       "right_shoulder_pitch_joint", "right_shoulder_roll_joint",
       "right_shoulder_yaw_joint", "right_elbow_joint",
       "right_wrist_roll_joint", "right_wrist_pitch_joint",
       "right_wrist_yaw_joint",
-    ]
+    ] # same order as in model_config.json
     self.right_arm_indices = [
       self.joint_names.index(n) for n in self.right_arm_joint_names
       if n in self.joint_names
     ]
-    # Arm defaults are simply the defaults from the main model config.
+
+    # Storing right arm default positions.
     self.arm_default_pos = np.array([
       self.default_joint_pos[self.joint_names.index(n)]
       for n in self.right_arm_joint_names
     ], dtype=np.float32)
+
+    # Storing right palm site id for information retrieval (position, orientation, jacobian).
     self.right_palm_site_id = mujoco.mj_name2id(
       self.model, mujoco.mjtObj.mjOBJ_SITE, "right_palm"
     )
 
-  # --- State helpers ---
+  # --- Helper functions ---
+  # These functions help retrieve information necessary to compute IK outputs. 
+  # In particular, all the data used (positions, orientations, velocities) are provided by MuJoCo relative to the world frame.
+  # To compute IK outputs relative to the pelvis (base frame) of the robot, conversions of base frame data are required.
+
   def _get_base_pose(self):
     '''
-    Return base(pelvis) position and orientation (quaternion) in world frame
+    Returns base(pelvis) position and orientation (quaternion) in world frame
     '''
     return self.data.qpos[:3].copy(), self.data.qpos[3:7].copy()
 
   @staticmethod
   def _quat_apply_inverse(quat, vec):
     '''
-    Computes rotation on provided vector based on quaternions in input
+    Returns rotated vector (vec) based on quaternions in input (quat)
     '''
     w, xyz = quat[0], quat[1:4]
     t = np.cross(xyz, vec) * 2
@@ -116,7 +132,7 @@ class G1Controller:
   @staticmethod
   def _quat_to_rotmat(quat):
     '''
-    Computes rotation matrix from quaternions
+    Returns rotation matrix from quaternions in input (quat)
     '''
     mat = np.zeros(9, dtype=np.float64)
     mujoco.mju_quat2Mat(mat, quat)
@@ -133,14 +149,14 @@ class G1Controller:
 
   def _get_projected_gravity(self):
     '''
-    Returns base(pelvis) rotation vector in world frame
+    Returns gravity vector projected onto base(pelvis) frame (gravity vector in world frame is [0, 0, -9.81])
     '''
     _, quat = self._get_base_pose()
     return self._quat_apply_inverse(quat, np.array([0.0, 0.0, -1.0]))
 
   def _get_joint_positions(self):
     '''
-    Returns array with positions of all joints defined and ordered as in model_config.json
+    Returns array with positions of all joints defined and ordered as in model_config.json realative to default joint positions
     '''
     pos = np.zeros(self.num_joints, dtype=np.float32)
     for i, n in enumerate(self.joint_names):
@@ -156,62 +172,23 @@ class G1Controller:
       vel[i] = self.data.qvel[self.joint_qvel_indices[n]]
     return vel
 
-  def _get_arm_joint_positions(self):
-    '''
-    Returns array with positions of right arm joints defined and ordered as in model_config.json
-    '''
-    pos = np.zeros(len(self.right_arm_indices), dtype=np.float32)
-    for i, idx in enumerate(self.right_arm_indices):
-      n = self.joint_names[idx]
-      pos[i] = self.data.qpos[self.joint_qpos_indices[n]] - self.arm_default_pos[i]
-    return pos
-
-  def _get_arm_joint_velocities(self):
-    '''
-    Returns array with velocities of right arm joints defined and ordered as in model_config.json
-    '''
-    vel = np.zeros(len(self.right_arm_indices), dtype=np.float32)
-    for i, idx in enumerate(self.right_arm_indices):
-      vel[i] = self.data.qvel[self.joint_qvel_indices[self.joint_names[idx]]]
-    return vel
-
   def _get_palm_pos_in_pelvis(self):
     '''
-    Returns position of right palm frame realtive to base(pelvis)
+    Returns position of right palm frame(EE) relative to base(pelvis)
     '''
-    palm_world = self.data.site_xpos[self.right_palm_site_id].copy() # palm postion realtive to world frame
+    palm_world = self.data.site_xpos[self.right_palm_site_id].copy() # palm position relative to world frame
     pos, quat = self._get_base_pose()
     return self._quat_apply_inverse(quat, palm_world - pos)
-
-  def _get_palm_orientation_in_pelvis(self):
-    '''
-    Returns orientation of right palm frame realtive to base(pelvis)
-    '''
-    mat = self.data.site_xmat[self.right_palm_site_id].reshape(3, 3) # palm orientation as a rotation matrix
-    palm_q = np.zeros(4)
-    mujoco.mju_mat2Quat(palm_q, mat.flatten()) # palm orientation as quaternions
-    _, pelvis_q = self._get_base_pose()
-    pinv = np.array([pelvis_q[0], -pelvis_q[1], -pelvis_q[2], -pelvis_q[3]])
-    w1, x1, y1, z1 = pinv
-    w2, x2, y2, z2 = palm_q
-    rel = np.array([
-      w1*w2 - x1*x2 - y1*y2 - z1*z2,
-      w1*x2 + x1*w2 + y1*z2 - z1*y2,
-      w1*y2 - x1*z2 + y1*w2 + z1*x2,
-      w1*z2 + x1*y2 - y1*x2 + z1*w2,
-    ])
-    w, x, y, z = rel # orientation of right palm wrt base(pelvis) in quaternions
-    roll = np.arctan2(2*(w*x + y*z), 1 - 2*(x*x + y*y))
-    sinp = np.clip(2*(w*y - z*x), -1, 1)
-    pitch = np.arcsin(sinp)
-    yaw = np.arctan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))
-    return np.array([roll, pitch, yaw], dtype=np.float32)
 
   def _get_palm_jacobian_in_pelvis(self):
     '''
     Returns linear and angular jacobian matrices of right palm(EE) relative to pelvis(base)
-    (comprises basic robot jacobian of last joint relative to base and rigid body jacobian of palm realtive to last joint)
+    (comprises basic robot jacobian of last right arm joint relative to base and
+      rigid body jacobian of right palm relative to last right arm joint)
     '''
+
+     # Retrieving from robot model linear and angular jacobian matrices of right palm site relative to world
+     # (thanks to MuJoCo the geometric and kinematic model are not necessary to compute)
     jacp_world = np.zeros((3, self.model.nv), dtype=np.float64)
     jacr_world = np.zeros((3, self.model.nv), dtype=np.float64)
     mujoco.mj_jacSite(
@@ -220,7 +197,7 @@ class G1Controller:
       jacp_world,
       jacr_world,
       self.right_palm_site_id,
-    ) # retrieves from robot model linear and angular jacobian matrices of right palm(site) relative to world
+    )
 
     # Use MuJoCo's true dof addresses for robustness (independent of config ordering).
     arm_dof_indices = []
@@ -229,29 +206,30 @@ class G1Controller:
       if joint_id < 0:
         raise RuntimeError(f"Joint not found in model: {name}")
       arm_dof_indices.append(int(self.model.jnt_dofadr[joint_id])) # right arm is 7DOF
+
     # building jacobian matrices dimensions
     jacp_arm_world = jacp_world[:, arm_dof_indices]
     jacr_arm_world = jacr_world[:, arm_dof_indices]
 
     _, pelvis_q = self._get_base_pose() # quaternions of base(pelvis) relative to world
     pelvis_rot_world = self._quat_to_rotmat(pelvis_q) # rotation matrix from base(pelvis) to world
-    world_to_pelvis = pelvis_rot_world.T  # rotation matrix from world to base(pelvis)
+    world_to_pelvis = pelvis_rot_world.T  # rotation matrix from world to base(pelvis) (transpose)
 
-    # linear and angular jacobians of all right arm joints up to right palm(EE) realtive to base(pelvis)
+    # linear and angular jacobians of all right arm joints up to right palm(EE) relative to base(pelvis)
     jacp_pelvis = world_to_pelvis @ jacp_arm_world
     jacr_pelvis = world_to_pelvis @ jacr_arm_world
     return jacp_pelvis.astype(np.float32), jacr_pelvis.astype(np.float32)
 
   @staticmethod
   def _rot_to_angle_axis(R):
-    """Convert a 3x3 rotation matrix to angle-axis with SO(3) checks."""
+    """Converts a 3x3 rotation matrix to angle-axis with SO(3) checks."""
 
     # Checking matrix validity
     R = np.asarray(R, dtype=np.float64)
     if R.shape != (3, 3):
       raise ValueError(f"Rotation matrix must be 3x3, got {R.shape}")
 
-    tol = 1e-3
+    tol = 1e-3 # Tolerance for orthonormality and determinant checks
     det_R = np.linalg.det(R)
     ortho_err = np.linalg.norm(np.eye(3, dtype=np.float64) - (R.T @ R))
     if abs(det_R - 1.0) >= tol or ortho_err >= tol:
@@ -260,34 +238,41 @@ class G1Controller:
         f"Invalid rotation matrix: det={det_R:.6f}, ortho_err={ortho_err:.6e}"
       )
 
-    # Conversion in angle-axis vector
+    # Conversion in angle-axis vector representaion (axis * angle)
     cos_theta = np.clip((np.trace(R) - 1.0) / 2.0, -1.0, 1.0)
     theta = float(np.arccos(cos_theta))
 
     if theta < tol:
-      # theta = 0 -> arbitrary unitary h
+      # theta = 0 -> arbitrary axis (can choose any unitary h)
       h = np.array([1.0, 0.0, 0.0], dtype=np.float64) 
     elif theta > (np.pi - tol) and theta < np.pi:
-      # theta = pi
+      # theta = pi -> special case, axis can be computed from diagonal elements of R
       h = np.array([
         np.sqrt(max((R[0, 0] + 1.0) / 2.0, 0.0)),
         np.sqrt(max((R[1, 1] + 1.0) / 2.0, 0.0)),
         np.sqrt(max((R[2, 2] + 1.0) / 2.0, 0.0)),
       ], dtype=np.float64)
       h_norm = np.linalg.norm(h)
+
+      # Normalizing axis vector h (if norm is too small, use default axis)
       if h_norm < 1e-12:
         h = np.array([1.0, 0.0, 0.0], dtype=np.float64)
       else:
         h = h / h_norm
     else:
-      # generica theta
-      S = 0.5 * (R - R.T)
+      # generic theta
+
+      # Compute axis from skew-symmetric part of R (Rodrigues' formula)
+      S = 0.5 * (R - R.T) 
       vex_S = np.array([
         S[2, 1],
         -S[2, 0],
         S[1, 0],
       ], dtype=np.float64)
+
       sin_theta = np.sin(theta)
+
+      # Handle numerical issues when sin(theta) is very small
       if abs(sin_theta) < 1e-12:
         h = np.array([1.0, 0.0, 0.0], dtype=np.float64)
       else:
@@ -296,33 +281,34 @@ class G1Controller:
     return h, theta
 
   def _get_palm_rot_in_pelvis_mat(self):
-    """Return the 3x3 rotation matrix of the palm in the pelvis frame."""
-    wRe = self.data.site_xmat[self.right_palm_site_id].reshape(3, 3)
+    """Returns the 3x3 rotation matrix of the right palm(EE) in the pelvis frame."""
+
+    wRe = self.data.site_xmat[self.right_palm_site_id].reshape(3, 3) # right palm(EE) rotation matrix in world frame
     _, pelvis_q = self._get_base_pose()
     world_to_pelvis = self._quat_to_rotmat(pelvis_q).T # pelvis with respect to world
     return world_to_pelvis @ wRe
 
   def compute_ee_cartesian_velocity(self, goal_pos_pelvis, goal_rot_pelvis, k_l=1.0, k_a=1.0):
-    """Compute desired 6D EE Cartesian velocity to reach a goal pose.
+    """Computes desired 6D EE Cartesian velocity for right palm(EE) to reach the goal pose.
 
     Follows the resolved-rate formulation:
-      r    = p_goal - p_ee                        (translational error between goal and EE in pelvis frame)
-      bRe  = current EE rotation in pelvis frame
-      bRg  = goal rotation in pelvis frame
-      R_err = bRe.T @ bRg                         (goal orientation relative to EE)
+      r    = p_goal - p_ee                        (translational error between goal and EE in base(pelvis) frame)
+      bRe  = current EE rotation in base(pelvis) frame
+      bRg  = goal rotation in base(pelvis) frame
+      R_err = bRe.T @ bRg                         (orientation error of goal relative to EE)
       (h, theta) = RotToAngleAxis(R_err)
-      rho  = bRe @ (h * theta)                    (angular error[rotation vector] in pelvis frame)
+      rho  = bRe @ (h * theta)                    (angular error[rotation vector] in base(pelvis) frame)
       error = [rho; r]
-      x_dot = diag(k_a*I3, k_l*I3) @ error
+      x_dot = diag(k_a*I3, k_l*I3) @ error        (misalignment and orientation error formula )
 
     Args:
-      goal_pos_pelvis : (3,) target position in pelvis frame.
-      goal_rot_pelvis : (3,3) target rotation matrix in pelvis frame.
+      goal_pos_pelvis : (3,) target position in base(pelvis) frame.
+      goal_rot_pelvis : (3,3) target rotation matrix in base(pelvis) frame.
       k_l             : linear gain (scalar).
       k_a             : angular gain (scalar).
 
     Returns:
-      x_dot : (6,) desired Cartesian velocity [angular (3); linear (3)] in pelvis frame.
+      x_dot : (6,) desired Cartesian velocity [angular (3); linear (3)] in base(pelvis) frame.
     """
     p_ee = self._get_palm_pos_in_pelvis().astype(np.float64)
     bRe  = self._get_palm_rot_in_pelvis_mat()
@@ -331,26 +317,29 @@ class G1Controller:
     # Translational error
     r = np.asarray(goal_pos_pelvis, dtype=np.float64) - p_ee
 
-    # Rotational error via angle-axis
+    # Orientation error via angle-axis
     R_err = bRe.T @ bRg
     h, theta = self._rot_to_angle_axis(R_err)
-    rho = bRe @ (h * theta)           # angular error expressed in pelvis frame
+    rho = bRe @ (h * theta)           # angular error expressed in base(pelvis) frame
 
     error = np.concatenate([rho, r])  # [angular (3); linear (3)]
 
-    delta = np.diag([k_a, k_a, k_a, k_l, k_l, k_l])
+    delta = np.diag([k_a, k_a, k_a, k_l, k_l, k_l]) # matrix for scaling angular and linear errors
 
     x_dot = delta @ error             # element-wise: equivalent to diag(delta) @ error
     return x_dot.astype(np.float32)
 
   # --- Step ---
   def step(self) -> np.ndarray:
+    """Computes target joint positions for the next simulation step."""
+
     # Build walker observation (always runs — keeps legs stable)
     lin_vel, ang_vel = self._get_base_velocities()
     proj_gravity = self._get_projected_gravity()
     joint_pos = self._get_joint_positions()
     joint_vel = self._get_joint_velocities()
 
+    # Command vector for the walker policy (linear and angular velocities) (always zero -> standing state)
     cmd = np.array([self.lin_vel_x, self.lin_vel_y, self.ang_vel_z], dtype=np.float32)
 
     obs = np.concatenate([
@@ -358,10 +347,10 @@ class G1Controller:
     ]).astype(np.float32)
 
     # Walker policy action (handles legs, waist and torso for standing)
-    action = self.walker_policy(obs)
+    action = self.walker_policy(obs) # policy outputs from observations
     target_pos = self.default_joint_pos + action * self.action_scales
 
-    # Arms: left arm always at default, right arm holds last reach position
+    # Arms: left arm always at default
     for idx in self.arm_indices:
       target_pos[idx] = self.default_joint_pos[idx]
 
@@ -374,18 +363,23 @@ class G1Controller:
     return target_pos
 
   def _cache_actuator_ids(self):
-    """Cache actuator IDs once at init instead of looking up every step."""
+    """Caches actuator IDs once at init instead of looking up every step."""
+
     self.actuator_ids = []
     for name in self.joint_names:
       self.actuator_ids.append(self._resolve_actuator_id(name))
 
   @staticmethod
   def _actuator_name_candidates(joint_name: str):
+    """ Returns a list of formatted names for the joint name provided, to be used for actuator ID lookup. """
+
     if joint_name.endswith("_joint"):
       return [joint_name, joint_name[:-6]]
     return [joint_name, f"{joint_name}_joint"]
 
   def _resolve_actuator_id(self, joint_name: str) -> int:
+    """ Returns the actuator ID for a given joint name, or -1 if not found."""
+
     for candidate in self._actuator_name_candidates(joint_name):
       actuator_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, candidate)
       if actuator_id >= 0:
@@ -393,8 +387,8 @@ class G1Controller:
     return -1
 
   def _cache_finger_actuators(self, obj_name, open_targets=None):
-    """Cache right hand finger actuator IDs and their closed targets."""
-    # (actuator_id, open_position, closed_position)
+    """Caches right hand finger actuator IDs and their closed target positions."""
+    
     self.right_finger_actuators = []
     if obj_name == "red_cylinder":
       # Red cylinder
@@ -439,8 +433,9 @@ class G1Controller:
         self.right_finger_actuators.append((aid, open_val, closed_val))
 
   def apply_pd_control(self, target_pos):
-    """ Apply target positions to all joints (right arm for reaching target, grip actuators for hand manipulation
+    """ Applies target positions to all joints (right arm for reaching target, grip actuators for hand manipulation
         and rest of the body for balance), which are translated into PD control signals by MuJoCo. """
+    
     for i, act_id in enumerate(self.actuator_ids):
       if act_id >= 0:
         self.data.ctrl[act_id] = target_pos[i]
@@ -454,7 +449,7 @@ class G1Controller:
       self.data.ctrl[act_id] = (1.0 - grip_alpha) * open_val + grip_alpha * closed_val
 
   def _get_grip_alpha(self) -> float:
-    """Return smoothed [0..1] grip command interpolation."""
+    """Returns smoothed [0..1] grip command interpolation."""
     if self.grip_transition_start_time is None:
       # No transition in progress, return the current goal value
       return float(self.grip_alpha_goal)
@@ -480,7 +475,7 @@ class G1Controller:
     return float(alpha)
 
   def _start_grip_transition(self, close_target: bool) -> None:
-    """ Set the grip transition parameters to start a smooth interpolation between 
+    """Sets the grip transition parameters to start a smooth interpolation between 
         open and closed states, or vice versa."""
     current_alpha = self._get_grip_alpha() # Initial call to _get_grip_alpha for starting the transition (other is in apply_pd_control)
     self.grip_alpha_start = current_alpha
@@ -488,7 +483,7 @@ class G1Controller:
     self.grip_transition_start_time = time.time()
 
   def set_grip_state(self, close_target: bool) -> None:
-    """Set right hand grip state explicitly and reset lift state when toggled."""
+    """Sets right hand grip state explicitly and resets lift state when toggled."""
     if self.grip_closed == close_target:
       # State already up to date, no changes to be done
       return

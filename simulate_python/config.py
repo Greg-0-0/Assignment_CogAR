@@ -9,16 +9,13 @@ ROBOT = "g1" # Robot name
 # - Keep None to ask interactively at launch.
 SCENE_PRESET = None
 
-# Optional environment variable override (highest priority):
-# export UNITREE_SCENE=scene1   or   export UNITREE_SCENE=scene2
-SCENE_ENV_VAR = "UNITREE_SCENE"
-
-
 def _scene_path(scene_file: str) -> str:
 	return "../unitree_robots/" + ROBOT + "/" + scene_file
 
 
 def _normalize_scene_name(value: str):
+	"""Normalizes scene value for benchmark selection."""
+
 	v = value.strip().lower()
 	if v in ("1", "scene1", "scene1.xml"):
 		return "scene1.xml"
@@ -28,12 +25,7 @@ def _normalize_scene_name(value: str):
 
 
 def get_robot_scene() -> str:
-	"""Resolve scene path before MuJoCo model initialization."""
-	env_value = os.environ.get(SCENE_ENV_VAR)
-	if env_value:
-		env_scene = _normalize_scene_name(env_value)
-		if env_scene is not None:
-			return _scene_path(env_scene)
+	"""Resolves scene path before MuJoCo model initialization."""
 
 	if SCENE_PRESET is not None:
 		preset_scene = _normalize_scene_name(SCENE_PRESET)
@@ -45,7 +37,7 @@ def get_robot_scene() -> str:
 		return _scene_path("scene1.xml")
 
 	while True:
-		choice = input("Select task scene [1=scene1, 2=scene2] (default 1): ").strip()
+		choice = input("Select task scene [1=task1, 2=task2] (default 1): ").strip()
 		if choice == "":
 			return _scene_path("scene1.xml")
 		chosen = _normalize_scene_name(choice)

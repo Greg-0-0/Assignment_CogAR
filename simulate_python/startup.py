@@ -11,10 +11,7 @@ from mujoco import viewer
 
 from ONNXPolicy import ONNXPolicy
 from G1Controller import G1Controller
-from utilities import set_armature, _solve_damped_pseudoinverse_dq, _joint_state_refs
-
-
-SCRIPT_DIR = Path(__file__).resolve().parent
+import utilities 
 
 def on_key(keycode: int) -> None:
   ctrl.key_callback(keycode)
@@ -23,31 +20,37 @@ def on_key(keycode: int) -> None:
 # Initialisation
 # --------------------------------------------------------------------------- #
 
-locker = threading.Lock()
-selected_scene = config.get_robot_scene()
+locker = threading.Lock() # MuJoCo viewer and simulation run in separate threads,
+                          # need to ensure consistency of shared variables (e.g. mjData)
+
+# Selects scene to load based on user input (infers benchmark selection).
+selected_scene = config.get_robot_scene() 
 print(f"[CONFIG] Using scene: {selected_scene}")
 mj_model = mujoco.MjModel.from_xml_path(selected_scene)
 
-# Load config
+# Load robot configuation for walker policy(specific order to coordinate with ONNX model) and armature setup.
+SCRIPT_DIR = Path(__file__).resolve().parent
 config_path = SCRIPT_DIR / "policy_resources/model_config.json"
 with open(config_path) as f:
     config_robot = json.load(f)
 joint_names = config_robot["joint_names"]
 
 mj_model.opt.timestep = config.SIMULATE_DT
-set_armature(mj_model, joint_names)
+utilities.set_armature(mj_model, joint_names)
 
 mj_data = mujoco.MjData(mj_model)
 
-# Init robot pose — spawn behind the table, facing it
+# Init robot pose -> spawn behind the table, facing it
+# (pelvis position and orientation)
 mj_data.qpos[0] = -0.6  # x: back from table
-mj_data.qpos[2] = 0.76
-mj_data.qpos[3:7] = [1, 0, 0, 0]
+mj_data.qpos[2] = 0.76  # z: height
+mj_data.qpos[3:7] = [1, 0, 0, 0]  # quaternion for orientation
 for name, value in config_robot["default_joint_pos"].items():
     if name in joint_names:
         mj_data.qpos[7 + joint_names.index(name)] = value
 
-# Startup right-arm posture preload: elbox and flexed, forearm and hand lifted
+# Startup right-arm posture preload: elbow flexed, forearm and hand lifted
+# (avoids poor right arm control at simulation start, and provides a more natural starting pose for the right arm).
 right_arm_spawn_offsets = {
   "right_shoulder_pitch_joint": -0.3,
   "right_shoulder_roll_joint": -0.2,
@@ -65,11 +68,14 @@ mujoco.mj_forward(mj_model, mj_data)
 print("Loading ONNX policies...")
 walker = ONNXPolicy(str(SCRIPT_DIR / "policy_resources/walker.onnx"))
 
-# Create right arm controller #
-# Recover initial object to be grasped
+# ------------ Creating right arm controller ------------ #
+
+# Predefined grasp poses for the two benchmark objects, defined as local rotations 
+# to be applied to the right palm site. 
+# (all orientations are to be considered as applied to the right hand with its palm facing the robot body)
 
 # Desired palm orientation in world frame for top-down grasping (Blue cube).
-# A local +X roll (negative for inward) is applied like wrist_roll.
+# A local roll (if negative -> inward rotation of the palm) is applied to the wrist joint.
 wrist_roll_deg = -90.0
 roll = np.deg2rad(wrist_roll_deg)
 cr1, sr1 = np.cos(roll), np.sin(roll)
@@ -81,7 +87,7 @@ roll_local_x = np.array([
 ], dtype=np.float32)
 
 # Desired palm orientation in world frame for tilted grasping (White mug).
-# A local +Z yaw is applied like wrist_yaw.
+# A local yaw (negative -> flex of the wrist to the right) is applied to the wrist joint.
 wrist_yaw_deg = 20.0
 yaw = np.deg2rad(wrist_yaw_deg)
 cr2, sr2 = np.cos(yaw), np.sin(yaw)
@@ -92,7 +98,7 @@ yaw_local_z = np.array([
   [0.0, 0.0,  1.0],
 ], dtype=np.float32)
 
-# Palm orientation after transportation to ease object relocation.
+# Palm orientation after transportation to ease object relocation (White mug).
 wrist_yaw_deg = -30.0
 yaw = np.deg2rad(wrist_yaw_deg)
 cr2, sr2 = np.cos(yaw), np.sin(yaw)
@@ -110,8 +116,10 @@ no_rotation = np.array([
   [0.0, 0.0, 1.0],
 ], dtype=np.float32)
 
+# Predefined palm position offsets for grasping different objects (only those that are grabbed as first item).
 target_body_name = None
 for candidate in ("red_cylinder", "mug_object"):
+  # Retrieving first object to grasp depending on task chosen.
   bid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, candidate)
   if bid >= 0:
     target_body_id = bid
@@ -122,9 +130,9 @@ for candidate in ("red_cylinder", "mug_object"):
       ik_target_z_offset_world = 0.0  # no offset above cylinder center
       grasp_rot_world = (no_rotation).astype(np.float32)
     elif target_body_name == "mug_object":
-      ik_target_x_offset_world = 0.01 # offset along x direction cylinder center
-      ik_target_y_offset_world = -0.14 # no offset along y direction cylinder center
-      ik_target_z_offset_world = 0.0  # no offset above cylinder center
+      ik_target_x_offset_world = 0.01 # offset along x direction mug center
+      ik_target_y_offset_world = -0.14 # no offset along y direction mug center
+      ik_target_z_offset_world = 0.0  # no offset above mug center
       grasp_rot_world = (yaw_local_z).astype(np.float32)
     break
 else:
@@ -132,9 +140,10 @@ else:
 print(f"[IK] Tracking target body: {target_body_name}")
 
 ctrl = G1Controller(mj_model, mj_data, walker, config_robot, target_body_name)
+
+# Setting up triggering task flags based on the selected benchmark.
 is_scene1_task = (target_body_name == "red_cylinder")
 is_scene2_task = (target_body_name == "mug_object")
-ctrl.manual_grip_enabled = False
 
 # Warm up ONNX models (first call triggers JIT compilation)
 _dummy99 = np.zeros((1, 99), dtype=np.float32)
@@ -142,16 +151,17 @@ walker(_dummy99)
 
 viewer = mujoco.viewer.launch_passive(mj_model, mj_data, key_callback=on_key)
 
-
+# Task logic runs separate from the physics and rendering loop in order to avoid impacting simulation performance with Python code execution time.
 def SimulationThread():
-  global mj_data, mj_model
 
-  right_arm_joint_refs = _joint_state_refs(mj_model, ctrl.right_arm_joint_names)
+  # Defining initial right-arm joint target positions.
+  right_arm_joint_refs = utilities._joint_state_refs(mj_model, ctrl.right_arm_joint_names)
   right_arm_q_des = np.array([
     float(mj_data.qpos[right_arm_joint_refs[name][0]])
     for name in ctrl.right_arm_joint_names
   ], dtype=np.float32)
 
+  # Defining right-arm joint limits for IK clamping.
   right_arm_q_min = []
   right_arm_q_max = []
   for joint_name in ctrl.right_arm_joint_names:
@@ -166,7 +176,7 @@ def SimulationThread():
   right_arm_q_max = np.asarray(right_arm_q_max, dtype=np.float32)
 
   # Apply startup posture on the commanded arm target as well (not only qpos spawn), 
-  # this way joint positions are kept until initial movmeent.
+  # this way joint positions are kept until initial movement.
   startup_arm_cmd_offsets = {
     "right_shoulder_pitch_joint": -0.3,
     "right_shoulder_roll_joint": -0.2,
@@ -179,46 +189,46 @@ def SimulationThread():
   # Keep this startup posture as the nominal right-arm command before IK takeover.
   ctrl.frozen_arm_pos = right_arm_q_des.copy()
 
+  # IK parameters and state variables (can be changed more easily than hardcoded values in control loop)
   ik_enabled = True
-  ik_damping = 0.08
-  ik_pos_gain = 2.0
-  ik_rot_gain = 2.0
+  ik_damping = 0.08 # for pseudoinverse computation
+  ik_pos_gain = 2.0 # gain applied on position error to compute desired task velocity
+  ik_rot_gain = 2.0 # gain applied on orientation error to compute desired task velocity
   ik_max_joint_speed = 1.8  # rad/s
   ik_startup_delay_s = 0.25  # keep startup posture briefly, then start IK pursuit
-  ik_hold_distance = 0.015  # latch/hold when palm is this close to target
-  ik_hold_rot_deg = 4.0  # require tighter orientation convergence before hold
-  ik_hold_rot_rad = np.deg2rad(ik_hold_rot_deg)
-  ik_hold_min_cycles = 15  # consecutive control cycles before hold latch
-  ik_hold_active = False
-  ik_hold_ready_count = 0
-  ik_hold_target_world = None
-  post_grasp_lift_delay_s = 4.0
-  post_grasp_lift_z_world = 0.07
-  post_grasp_lift_duration_s = 1.2
-  current_grasp_rot_world = grasp_rot_world.copy()
+  post_grasp_lift_z_world = 0.07 # post-grasp z offset for lifting phase
+  post_grasp_lift_duration_s = 1.2 # wait after grasping before lifting the object (to ensure firm grip)
+  current_grasp_rot_world = grasp_rot_world.copy() # current desired palm orientation for grasping (can be changed during task execution)
 
-  # Scene1 task state machine (red cylinder from cube -> blue basket)
+  # Scene1 task state machine #
+  # Phases: 1. grasp red cylinder 
+  #         2. transfer and release it in blue basket 
+  #         3. grasp from cube 4.  
+  #         4. transfer and release it in blue basket
   task1_step = 0
-  task1_pos_thresh = 0.003
-  task1_pos_thresh2 = 0.01
-  task1_cube_grasp_pos_thresh = 0.015
-  task1_rot_thresh = 0.08
-  task1_transfer_delay_s = 2.0
-  task1_retarget_cube_delay_s = 1.0
-  task1_cube_grip_settle_delay_s = 2.0
-  task1_cube_lift_z_tolerance = 0.008
-  task1_cube_lift_max_wait_s = 2.0
-  task1_close_time = None
-  task1_drop_open_time = None
-  task1_transfer_target_world = None
-  task1_second_transfer_target_world = None
-  task1_blue_basket_body_id = -1
-  task1_red_basket_body_id = -1
-  task1_blue_cube_body_id = -1
+  task1_cylind_grasp_pos_thresh = 0.003 # position error threshold to get in position to grasp the cylinder (used to enter step 1)
+  task1_cylind_drop_pos_thresh = 0.003 # position error threshold to align cylinder with the blue basket (used to enter step 2)
+  task1_cube_drop_pos_thresh = 0.01 # position error threshold for subsequent steps
+  task1_cube_grasp_pos_thresh = 0.015 # position error threshold to get in position to grasp the cube (used to enter step 4)
+  task1_cylind_rot_thresh = 0.08 # orientation error threshold to get in position to grasp the cylinder (used to enter step 0)
+  task1_cylind_transfer_delay_s = 2.0 # wait after grasping the cylinder before moving to the blue basket (used to enter step 1)
+  task1_retarget_cube_delay_s = 1.0 # wait after releasing the cylinder before retargeting the cube (used to enter step 3)
+  task1_cube_grip_settle_delay_s = 2.0 # wait after grasping the cube before lifting it to secure firm grip(used to enter step 5)
+  task1_cube_lift_z_tolerance = 0.008 # z position tolerance to consider the cube lifted (used to enter step 5)
+  task1_cube_lift_max_wait_s = 2.0 # maximum wait time to consider the cube lifted (used to enter step 5)
+  task1_close_time = None # Used as instant in time as reference to know when the grip is closed (used to enforce grasp delays in task progression)
+  task1_drop_open_time = None # Used as instant in time as reference to know when the grip is opened (used to enforce grasp delays in task progression)
+  task1_transfer_target_world1 = None # Used to store target palm position for the cylinder transfer to blue basket (used to enter step 1)
+  task1_transfer_target_world2 = None # Used to store target palm position for the cube transfer to red basket (used to enter step 6)
+  task1_blue_basket_body_id = -1 # Auxiliary variable to store body ID of the blue basket (used to enter step 1)
+  task1_red_basket_body_id = -1 # Auxiliary variable to store body ID of the red basket (used to enter step 6)
+  task1_blue_cube_body_id = -1 # Auxiliary variable to store body ID of the blue cube (used to enter step 4)
+  # Fixed offsets from the cube center to apply an efficient grasp. (determined in a separate simulation)
   task1_cube_x_offset = 0.019
   task1_cube_y_offset = 0.0
   task1_cube_z_offset = 0.08
   if is_scene1_task:
+    # Allocating object IDs for later use in the task logic.
     task1_blue_basket_body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "blue_basket")
     if task1_blue_basket_body_id < 0:
       raise RuntimeError("Body not found in model: blue_basket")
@@ -229,99 +239,94 @@ def SimulationThread():
     if task1_blue_cube_body_id < 0:
       raise RuntimeError("Body not found in model: blue_cube")
 
-  # Scene2 task state machine (mug handle grasp -> stabilize -> vertical lift)
+  # Scene1 task state machine #
+  # Phases: 1. grasp mug handle 
+  #         2. lift mug
+  #         3. transfer mug on coaster
+  #         4. release mug on coaster
   task2_step = 0
-  task2_pos_thresh = 0.015
-  task2_rot_thresh = np.deg2rad(0.2)
-  task2_grip_settle_delay_s = 2.0
-  task2_post_lift_wait_s = 2.0
-  task2_post_descent_wait_s = 3.0
-  task2_release_pos_thresh = 0.025
-  task2_descend_pos_thresh = 0.01
-  task2_distancing_pos_thresh = 0.02
-  task2_close_time = None
-  task2_lift_done_time = None
-  task2_hold_target_world = None
-  task2_pre_grasp_palm_z = None
-  task2_transfer_target_world = None
-  task2_release_target_world = None
-  task2_opening_target_world = None
-  task2_coaster_body_id = -1
+  task2_pos_thresh = 0.015 # position error threshold to reach mug handle (used to enter step 0)
+  task2_rot_thresh = np.deg2rad(0.2) # orientation error threshold to reach mug handle (used to enter step 0)
+  task2_grip_settle_delay_s = 2.0 # wait after grasping the mug before lifting it to secure firm grip (used to enter step 1)
+  task2_post_lift_wait_s = 2.0 # wait after lifting the mug before proceeding (used to enter step 2)
+  task2_post_descent_wait_s = 3.0 # wait after descending the mug before releasing (used to enter step 3)
+  task2_release_pos_thresh = 0.025 # position error threshold to release the mug (used to enter step 4)
+  task2_descend_pos_thresh = 0.01 # position error threshold to descend the mug (used to enter step 5)
+  task2_distancing_pos_thresh = 0.02 # position error threshold to distance the mug (used to enter step 6)
+  task2_close_time = None # Used as instant in time as reference to know when the grip is closed (used to enforce grasp delays in task progression)
+  task2_lift_done_time = None # Used as instant in time as reference to know when the lift is done (used to enforce grasp delays in task progression)
+  task2_hold_target_world = None # Used to store palm target positions throught the steps
+  task2_pre_grasp_palm_z = None # Used to store palm height for grasping and releasing mug handle
+  task2_transfer_target_world = None # Used to store  target palm position to transfer the mug on the coaster
+  task2_release_target_world = None # Used to store target palm position to release the mug on the coaster
+  task2_opening_target_world = None # Used to store target palm position during mug release to avoid tipping the mug (delicate motion)
+  task2_coaster_body_id = -1 # Auxiliary variable to store the body ID for the coaster (used in scene 2 task)
   if is_scene2_task:
+    # Allocating object ID for later use in the task logic.
     task2_coaster_body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "coaster")
     if task2_coaster_body_id < 0:
       raise RuntimeError("Body not found in model: coaster")
 
   # -------------------------------------------------------------------- #
+  #                       Printing model info
+  # -------------------------------------------------------------------- #
 
-  print("nu =", mj_model.nu)
-  print("nq =", mj_model.nq)
-  print("nv =", mj_model.nv)
+  print("nu =", mj_model.nu) # number of actuators -> dim(ctrl)
+  print("nq =", mj_model.nq) # number of generalized coordinates (joint positions + floating base pose) -> dim(qpos)
+  print("nv =", mj_model.nv) # number of generalized velocities (joint velocities + floating base velocity) -> dim(qvel)
 
   # ------------------------------------------------------------------- #
   # Simulation loop using launch_passive (MuJoCo's built-in viewer)
   # ------------------------------------------------------------------- #
 
-  decimation = 4
-  ik_dt = float(mj_model.opt.timestep * decimation)
-  control_step = 0
-  target_pos = ctrl.default_joint_pos.copy()
-  sim_time = 0.0
+  # Simulation parameters
+  decimation = 4 # Number of physics steps per control step (controls the action update frequency)
+  ik_dt = float(mj_model.opt.timestep * decimation) # Time step to use for desired joint positions computation from IK velocity (integration)
+  control_step = 0 # Counter to keep track of control steps for decimation (physics/informative updates)
+  target_pos = ctrl.default_joint_pos.copy() # Initial target joint positions (will be updated by the control loop)
+  sim_time = 0.0 # Simulation time, updated in real time with the wall clock to allow time-based task logic and IK updates
 
   print("Launching MuJoCo viewer...")
 
   # Reset clock AFTER viewer opens — prevents catchup lag burst on startup
   t0 = time.time()
+
+  # Time after which IK updates are allowed to start (allows to maintain the initial posture briefly
+  # for better visualisation and to avoid poor right arm control at simulation start).
   ik_enable_time = t0 + ik_startup_delay_s
   while viewer.is_running():
+
     # Step physics in real time (cap catchup to avoid jitter snowball)
     wall = time.time() - t0
     max_catchup = 0.05  # Never try to catch up more than 50ms per frame
+
     if wall - sim_time > max_catchup:
+      # Simulation is lagging behind real time, skipping frames to catch up (prevents long catchup bursts that cause jitter).
       sim_time = wall - max_catchup
     while sim_time < wall:
 
       locker.acquire()
+      # --- critical section start (accessing shared variables) --- #
 
       if control_step % decimation == 0:
-        target_pos = ctrl.step()
-
+        target_pos = ctrl.step() # Updating target joint positions (walker policy + arm controller)
         ik_can_run = ik_enabled and (time.time() >= ik_enable_time)
         if ik_can_run:
           ee_pos = ctrl._get_palm_pos_in_pelvis().astype(np.float32)
 
-          # Manual-only scenes: after closing fingers, wait a bit and then lift.
-          if (not is_scene1_task) and (not is_scene2_task) and (
-            ctrl.grip_closed
-            and (ctrl.grip_close_time is not None)
-            and (not ctrl.post_grasp_lift_active)
-            and ((time.time() - ctrl.grip_close_time) >= post_grasp_lift_delay_s)
-          ):
-            lift_start_world = mj_data.site_xpos[ctrl.right_palm_site_id].copy()
-            lift_final_world = lift_start_world.copy()
-            lift_final_world[2] += post_grasp_lift_z_world
-            ctrl.post_grasp_lift_start_world = lift_start_world
-            ctrl.post_grasp_lift_final_world = lift_final_world
-            ctrl.post_grasp_lift_start_time = time.time()
-            ctrl.post_grasp_lift_target_world = lift_start_world.copy()
-            ctrl.post_grasp_lift_active = True
-            ik_hold_active = False
-            ik_hold_ready_count = 0
-            ik_hold_target_world = None
-            print(
-              f"[IK] Post-grasp lift triggered (+{post_grasp_lift_z_world:.3f} m in world Z, {post_grasp_lift_duration_s:.2f}s)"
-            )
-
-          if is_scene1_task and (task1_step == 2) and (task1_transfer_target_world is not None):
-            target_world = task1_transfer_target_world.copy()
+          if is_scene1_task and (task1_step == 2) and (task1_transfer_target_world1 is not None):
+            target_world = task1_transfer_target_world1.copy()
           elif is_scene1_task and (task1_step in (4, 5)):
+            # Target position for cube grasping. The goal is defined here instead of being applied 
+            # in the corresponding steps (4, 5) to use the most up to date cube position at each cycle.
+            # This ensures even tiny adjustments (e.g., due to the hand) are accounted for, providing a firmer grip.
             cube_world = mj_data.xpos[task1_blue_cube_body_id].copy()
             cube_world[0] -= task1_cube_x_offset
             cube_world[1] += task1_cube_y_offset
             cube_world[2] += task1_cube_z_offset
             target_world = cube_world
-          elif is_scene1_task and (task1_step in (7, 8)) and (task1_second_transfer_target_world is not None):
-            target_world = task1_second_transfer_target_world.copy()
+          elif is_scene1_task and (task1_step in (7, 8)) and (task1_transfer_target_world2 is not None):
+            target_world = task1_transfer_target_world2.copy()
           elif is_scene2_task and (task2_step in (1, 3)) and (task2_hold_target_world is not None):
             target_world = task2_hold_target_world.copy()
           elif is_scene2_task and (task2_step == 4) and (task2_transfer_target_world is not None):
@@ -349,9 +354,6 @@ def SimulationThread():
                 + blend * ctrl.post_grasp_lift_final_world
               )
             target_world = ctrl.post_grasp_lift_target_world.copy()
-          elif ik_hold_active and (ik_hold_target_world is not None):
-            # Keep tracking the latched pose instead of chasing object motion.
-            target_world = ik_hold_target_world.copy()
           else:
             target_world = mj_data.xpos[target_body_id].copy()
             target_world[0] -= ik_target_x_offset_world
@@ -377,7 +379,7 @@ def SimulationThread():
           # Scene1 task progression
           if is_scene1_task:
             if task1_step == 0:
-              if (pos_err_norm <= task1_pos_thresh) and (theta_hold <= task1_rot_thresh):
+              if (pos_err_norm <= task1_cylind_grasp_pos_thresh) and (theta_hold <= task1_cylind_rot_thresh):
                 ctrl.set_grip_state(True)
                 task1_close_time = time.time()
                 task1_step = 1
@@ -390,47 +392,41 @@ def SimulationThread():
                 ctrl.post_grasp_lift_start_time = time.time()
                 ctrl.post_grasp_lift_target_world = lift_start_world.copy()
                 ctrl.post_grasp_lift_active = True
-
-                ik_hold_active = False
-                ik_hold_ready_count = 0
-                ik_hold_target_world = None
                 print("[TASK1] Grasp condition met -> close grip and lift")
+
             elif (task1_step == 1) and (task1_close_time is not None):
-              if (time.time() - task1_close_time) >= task1_transfer_delay_s:
+              if (time.time() - task1_close_time) >= task1_cylind_transfer_delay_s:
                 basket_world = mj_data.xpos[task1_blue_basket_body_id].copy()
                 basket_world[1] -= 0.05
                 z_keep = float(mj_data.site_xpos[ctrl.right_palm_site_id][2]) + 0.06
-                task1_transfer_target_world = np.array(
+                task1_transfer_target_world1 = np.array(
                   [basket_world[0], basket_world[1], z_keep], dtype=np.float32
                 )
                 ctrl.post_grasp_lift_active = False
                 task1_step = 2
-                ik_hold_active = False
-                ik_hold_ready_count = 0
-                ik_hold_target_world = None
                 print("[TASK1] Transfer phase -> moving to blue basket")
+
             elif task1_step == 2:
-              if pos_err_norm <= task1_pos_thresh:
+              if pos_err_norm <= task1_cylind_drop_pos_thresh:
                 ctrl.set_grip_state(False)
                 task1_step = 3
                 task1_drop_open_time = time.time()
                 print("[TASK1] At basket -> open grip")
+
             elif (task1_step == 3) and (task1_drop_open_time is not None):
               if (time.time() - task1_drop_open_time) >= task1_retarget_cube_delay_s:
                 current_grasp_rot_world = roll_local_x.astype(np.float32)
                 task1_step = 4
                 print("[TASK1] Retarget -> moving to blue cube")
+
             elif task1_step == 4:
               if pos_err_norm <= task1_cube_grasp_pos_thresh:
                 ctrl._cache_finger_actuators("blue_cube")
                 ctrl.set_grip_state(True)
                 task1_close_time = time.time()
                 task1_step = 5
-
-                ik_hold_active = False
-                ik_hold_ready_count = 0
-                ik_hold_target_world = None
                 print("[TASK1] At blue cube -> switched grip profile, close and settle grip")
+
             elif (task1_step == 5) and (task1_close_time is not None):
               if (time.time() - task1_close_time) >= task1_cube_grip_settle_delay_s:
                 lift_start_world = mj_data.site_xpos[ctrl.right_palm_site_id].copy()
@@ -443,9 +439,9 @@ def SimulationThread():
                 ctrl.post_grasp_lift_active = True
                 task1_step = 6
                 print("[TASK1] Firm grip wait done -> lifting cube vertically")
+                
             elif (task1_step == 6) and (ctrl.post_grasp_lift_start_time is not None):
               lift_elapsed = time.time() - ctrl.post_grasp_lift_start_time
-              lift_done_by_time = lift_elapsed >= post_grasp_lift_duration_s
               lift_z_goal = None
               if ctrl.post_grasp_lift_final_world is not None:
                 lift_z_goal = float(ctrl.post_grasp_lift_final_world[2]) + 0.08
@@ -454,10 +450,11 @@ def SimulationThread():
                 (lift_z_goal is not None)
                 and (abs(current_z - lift_z_goal) <= task1_cube_lift_z_tolerance)
               )
+
+              lift_done_by_time = lift_elapsed >= post_grasp_lift_duration_s
               lift_timeout = lift_elapsed >= (post_grasp_lift_duration_s + task1_cube_lift_max_wait_s)
 
-              if ((lift_elapsed >= post_grasp_lift_duration_s and lift_done_by_height) or 
-              (lift_elapsed >= (post_grasp_lift_duration_s + task1_cube_lift_max_wait_s))):
+              if ((lift_done_by_time and lift_done_by_height) or lift_timeout):
                 
                 basket_world = mj_data.xpos[task1_red_basket_body_id].copy()
                 basket_world[0] -= 0.06 # adjustment for cube drop off
@@ -465,21 +462,20 @@ def SimulationThread():
                   z_keep = lift_z_goal
                 else:
                   z_keep = current_z
-                task1_second_transfer_target_world = np.array(
+                task1_transfer_target_world2 = np.array(
                   [basket_world[0], basket_world[1], z_keep], dtype=np.float32
                 )
                 ctrl.post_grasp_lift_active = False
                 task1_step = 7
-                ik_hold_active = False
-                ik_hold_ready_count = 0
-                ik_hold_target_world = None
                 print("[TASK1] Transfer phase -> moving to red basket")
+
             elif task1_step == 7:
-              if pos_err_norm <= task1_pos_thresh2:
+              if pos_err_norm <= task1_cube_drop_pos_thresh:
                 ctrl.set_grip_state(False)
                 task1_step = 8
                 task1_drop_open_time = time.time()
                 print("[TASK1] At red basket -> open grip")
+
             elif (task1_step == 8) and (task1_drop_open_time is not None):
               if (time.time() - task1_drop_open_time) >= task1_retarget_cube_delay_s:
                 lift_start_world = mj_data.site_xpos[ctrl.right_palm_site_id].copy()
@@ -500,12 +496,11 @@ def SimulationThread():
                 ctrl.set_grip_state(True)
                 task2_close_time = time.time()
                 task2_hold_target_world = mj_data.site_xpos[ctrl.right_palm_site_id].copy()
+                task2_hold_target_world[1] += 0.015 # better alignment for grasping the mug handle
                 task2_pre_grasp_palm_z = float(task2_hold_target_world[2])
-
-                # more graceful grip
-                task2_hold_target_world[1] += 0.015
                 task2_step = 1
                 print("[TASK2] Mug grasp condition met -> close grip and stabilize")
+
             elif (
               (task2_step == 1)
               and (task2_close_time is not None)
@@ -522,6 +517,7 @@ def SimulationThread():
                 ctrl.post_grasp_lift_active = True
                 task2_step = 2
                 print("[TASK2] Grip stabilized -> lifting vertically")
+
             elif (task2_step == 2) and (ctrl.post_grasp_lift_start_time is not None):
               lift_elapsed = time.time() - ctrl.post_grasp_lift_start_time
               if lift_elapsed >= post_grasp_lift_duration_s:
@@ -530,10 +526,8 @@ def SimulationThread():
                 ctrl.post_grasp_lift_active = False
                 task2_step = 3
                 task2_lift_done_time = time.time()
-                ik_hold_active = False
-                ik_hold_ready_count = 0
-                ik_hold_target_world = None
                 print("[TASK2] Lift done -> holding elevated pose")
+
             elif (
               (task2_step == 3)
               and (task2_lift_done_time is not None)
@@ -551,10 +545,8 @@ def SimulationThread():
                   [coaster_world[0], coaster_world[1], z_keep], dtype=np.float32
                 )
                 task2_step = 4
-                ik_hold_active = False
-                ik_hold_ready_count = 0
-                ik_hold_target_world = None
                 print("[TASK2] Post-lift wait done -> reorienting and moving to coaster XY at fixed Z")
+
             elif task2_step == 4:
               if pos_err_norm <= task2_descend_pos_thresh:
                 coaster_world = mj_data.xpos[task2_coaster_body_id].copy()
@@ -570,10 +562,8 @@ def SimulationThread():
                   [coaster_world[0], coaster_world[1], release_z - 0.01], dtype=np.float32
                 )
                 task2_step = 5
-                ik_hold_active = False
-                ik_hold_ready_count = 0
-                ik_hold_target_world = None
                 print("[TASK2] At coaster XY -> descending to release pose")
+
             elif task2_step == 5:
               if pos_err_norm <= task2_release_pos_thresh:
                 mug_release_open_targets = {
@@ -594,46 +584,15 @@ def SimulationThread():
                 task2_lift_done_time = time.time()
                 task2_step = 6
                 print("[TASK2] Release pose reached -> slow partial opening grip")
+
             elif task2_step == 6:
               if ((pos_err_norm <= task2_distancing_pos_thresh)
                   and ((time.time() - task2_lift_done_time) >= task2_post_descent_wait_s)):
                 task2_distancing_target_world = mj_data.site_xpos[ctrl.right_palm_site_id].copy()
                 task2_distancing_target_world[0] -= 0.1
                 task2_distancing_target_world[1] -= 0.005
-
                 task2_step = 7
-                ik_hold_active = False
-                ik_hold_ready_count = 0
-                ik_hold_target_world = None
                 print("[TASK2] End")
-
-          if is_scene1_task:
-            ik_hold_active = False
-            ik_hold_ready_count = 0
-            ik_hold_target_world = None
-          elif is_scene2_task:
-            ik_hold_active = False
-            ik_hold_ready_count = 0
-            ik_hold_target_world = None
-          elif ctrl.post_grasp_lift_active:
-            ik_hold_active = False
-            ik_hold_ready_count = 0
-            ik_hold_target_world = None
-          else:
-            hold_ready = (pos_err_norm <= ik_hold_distance) and (theta_hold <= ik_hold_rot_rad)
-            if not ik_hold_active:
-              if hold_ready:
-                ik_hold_ready_count += 1
-              else:
-                ik_hold_ready_count = 0
-
-              if ik_hold_ready_count >= ik_hold_min_cycles:
-                ik_hold_active = True
-                ik_hold_target_world = target_world.copy()
-                print(
-                  f"[IK] HOLD latched at |pos_err|={pos_err_norm:.4f} m "
-                  f"|rot_err|={np.rad2deg(theta_hold):.2f} deg"
-                )
 
           jacp, jacr = ctrl._get_palm_jacobian_in_pelvis()
           jacobian_6x7 = np.vstack((jacr, jacp)).astype(np.float32)
@@ -644,24 +603,18 @@ def SimulationThread():
             k_a=ik_rot_gain,
           )
 
-          dq = _solve_damped_pseudoinverse_dq(jacobian_6x7, x_dot, ik_damping)
+          dq = utilities._solve_damped_pseudoinverse_dq(jacobian_6x7, x_dot, ik_damping)
           dq = np.clip(dq, -ik_max_joint_speed, ik_max_joint_speed)
           right_arm_q_des = right_arm_q_des + dq * ik_dt
           right_arm_q_des = np.clip(right_arm_q_des, right_arm_q_min, right_arm_q_max)
 
           if control_step % 200 == 0:
-            if ik_hold_active:
-              print(
-                f"[IK] HOLD active |pos_err|={pos_err_norm:.4f} "
-                f"|rot_err|={np.rad2deg(theta_hold):.2f} deg"
-              )
-            else:
-              print(
-                f"[IK] |pos_err|={pos_err_norm:.4f} "
-                f"|rot_err|={np.rad2deg(theta_hold):.2f} deg "
-                f"|x_dot|={float(np.linalg.norm(x_dot)):.4f} "
-                f"|dq|={float(np.linalg.norm(dq)):.4f}"
-              )
+            print(
+              f"[IK] |pos_err|={pos_err_norm:.4f} "
+              f"|rot_err|={np.rad2deg(theta_hold):.2f} deg "
+              f"|x_dot|={float(np.linalg.norm(x_dot)):.4f} "
+              f"|dq|={float(np.linalg.norm(dq)):.4f}"
+            )
         elif control_step % 200 == 0:
           print("[IK] Waiting startup settle before enabling IK...")
 
@@ -671,13 +624,17 @@ def SimulationThread():
       ctrl.apply_pd_control(target_pos)
       mujoco.mj_step(mj_model, mj_data)
 
+      # --- exiting critical section --- #
       locker.release()
 
       control_step += 1
       sim_time += mj_model.opt.timestep
 
-
+# Main thread for rendering and synchronizing with the physics thread, also used to set up the camera view.
 def PhysicsViewerThread():
+    
+    # Retrieving right shoulder position for camera setup. 
+    # If the body is not found, the camera will fallback to aiming at the palm.
     right_shoulder_body_id = mujoco.mj_name2id(
       mj_model, mujoco.mjtObj.mjOBJ_BODY, "right_shoulder_pitch_link"
     )
@@ -685,6 +642,8 @@ def PhysicsViewerThread():
     while viewer.is_running():
 
         locker.acquire()
+        # --- critical section start (accessing shared variables) --- #
+
         if not configured_camera:
           # Set initial camera aiming at right arm/hand, then keep it fixed.
           palm_world = mj_data.site_xpos[ctrl.right_palm_site_id]
@@ -700,8 +659,10 @@ def PhysicsViewerThread():
           viewer.cam.elevation = -35.0
           configured_camera = True
         viewer.sync()
+
+        # --- exiting critical section --- #
         locker.release()
-        time.sleep(config.VIEWER_DT)
+        time.sleep(config.VIEWER_DT) # Sleep to limit viewer thread loop frequency (and avoid excessive CPU usage, since sync is not blocking in this setup).
 
 
 if __name__ == "__main__":
