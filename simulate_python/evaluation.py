@@ -3,7 +3,6 @@ import os
 import sys
 import time
 import threading
-import unitree_mujoco.simulate_python.startup_config as startup_config
 import numpy as np
 from threading import Thread
 from pathlib import Path
@@ -14,13 +13,14 @@ from mujoco import viewer
 from script_files.ONNXPolicy import ONNXPolicy
 from script_files.G1Controller import G1Controller
 import script_files.utilities as utilities 
+import evaluation_config
 
 # Providing fallback for SCRIPT_PATH and SCRIPT_DIR in case __file__ is not unavailable.
 # This way both instructions work.
 try:
   SCRIPT_PATH = Path(__file__).resolve()
 except NameError:
-  SCRIPT_PATH = Path.cwd() / "startup_copy.py"
+  SCRIPT_PATH = Path.cwd() / "evaluation.py"
 SCRIPT_DIR = SCRIPT_PATH.parent
 
 def on_key(keycode: int) -> None:
@@ -29,14 +29,23 @@ def on_key(keycode: int) -> None:
       os.execv(sys.executable, [sys.executable, str(SCRIPT_PATH)])
 
 # --------------------------------------------------------------------------- #
-# Initialisation
+# Configuration
 # --------------------------------------------------------------------------- #
 
 locker = threading.Lock() # MuJoCo viewer and simulation run in separate threads,
                           # need to ensure consistency of shared variables (e.g. mjData)
 
-# Selects scene to load based on user input (infers benchmark selection).
-selected_scene = startup_config.get_robot_scene() 
+# Read current evaluation instruction from the last non-empty log line.
+EVAL_LOG_PATH = SCRIPT_DIR / "quantitative_evaluation/evaluations.log"
+with open(EVAL_LOG_PATH, "r", encoding="utf-8") as f:
+  log_lines = [line.strip() for line in f if line.strip()]
+if not log_lines:
+  raise RuntimeError(f"No evaluation instructions found in {EVAL_LOG_PATH}")
+current_instruction = log_lines[-1]
+current_instruction = current_instruction.split(" ")[-1]
+
+# Selects scene to load based on instructions from evaluations.log (infers benchmark selection).
+selected_scene = evaluation_config.get_robot_scene(current_instruction)
 print(f"[CONFIG] Using scene: {selected_scene}")
 mj_model = mujoco.MjModel.from_xml_path(selected_scene)
 
@@ -46,7 +55,7 @@ with open(config_path) as f:
     config_robot = json.load(f)
 joint_names = config_robot["joint_names"]
 
-mj_model.opt.timestep = startup_config.SIMULATE_DT
+mj_model.opt.timestep = evaluation_config.SIMULATE_DT
 utilities.set_armature(mj_model, joint_names)
 
 mj_data = mujoco.MjData(mj_model)
@@ -74,6 +83,18 @@ for joint_name, delta in right_arm_spawn_offsets.items():
     mj_data.qpos[qpos_idx] += delta
 
 mujoco.mj_forward(mj_model, mj_data)
+
+# Snapshot full initial simulation state to restore before each new evaluation trial.
+initial_sim_state = {
+  "qpos": mj_data.qpos.copy(),
+  "qvel": mj_data.qvel.copy(),
+  "act": mj_data.act.copy(),
+  "ctrl": mj_data.ctrl.copy(),
+  "qacc_warmstart": mj_data.qacc_warmstart.copy(),
+  "mocap_pos": mj_data.mocap_pos.copy(),
+  "mocap_quat": mj_data.mocap_quat.copy(),
+  "time": float(mj_data.time),
+}
 
 # Load walker policy
 print("Loading ONNX policies...")
@@ -151,6 +172,7 @@ else:
 print(f"[IK] Tracking target body: {target_body_name}")
 
 ctrl = G1Controller(mj_model, mj_data, walker, config_robot, target_body_name)
+initial_grasp_rot_world = grasp_rot_world.copy()
 
 # Setting up triggering task flags based on the selected benchmark.
 is_scene1_task = (target_body_name == "red_cylinder")
@@ -160,10 +182,49 @@ is_scene2_task = (target_body_name == "mug_object")
 _dummy99 = np.zeros((1, 99), dtype=np.float32)
 walker(_dummy99)
 
-viewer = mujoco.viewer.launch_passive(mj_model, mj_data, key_callback=on_key)
+viewer = mujoco.viewer.launch_passive(mj_model, mj_data)
+
+# -------------------------------------------------------------------- #
+#          Evaluation parameters (resetted when changing task)
+# -------------------------------------------------------------------- #
+
+# (defined as global variables to be accessible from both simulation and measurement threads)
+
+# Lists of elements with 8 values each (left hip, left knee, left ankle, right hip, right knee, right ankle,
+#  waist, torso) to store maximum roll and pitch measured during each trial (used for evaluation type 1 and 2)
+# (computed in a separate thread for highest frequency of measurements)
+n_trials_per_task = 10 # Number of trials to execute for each task and evaluation type
+max_roll_measured_type1 = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
+max_pitch_measured_type1 = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
+max_roll_measured_type2 = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
+max_pitch_measured_type2 = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
+trial_index = 0 # Shared current trial slot for measurement threads and simulation thread.
+
 
 # Task logic runs separate from the physics and rendering loop in order to avoid impacting simulation performance with Python code execution time.
 def SimulationThread():
+
+  # -------------------------------------------------------------------- #
+  #          Evaluation parameters (continued)
+  # -------------------------------------------------------------------- #
+
+  # (defined as local variables since they need to be accessed only by this thread)
+
+  evaluation_type = 1 # 1: simple repetition of the task, 2: randomisation of object initial positions
+  trial_count = 0 # Counter to keep track of executed trials 
+  position_error_eval_type1 = [] # List to store position errors of mug placement step for each trial
+                    # (since only step where target position must be precisely respected)(used for evaluation type 1)
+  position_error_eval_type2 = [] # List to store position errors of mug placement step for each trial
+  # (since only step where target position must be precisely respected)(used for evaluation type 2 with randomised initial positions)
+  task_completion_times_type1 = [] # List to store task completion times for each trial (used for evaluation type 1)
+  task_completion_times_type2 = [] # List to store task completion times for each trial (used for evaluation type 2)
+  task_start_time = None # Variable to store the start time of the current trial (used to compute task completion time)
+  task_success_type1 = [] # List to store boolean values indicating task success for each trial (used for evaluation type 1)
+  task_success_type2 = [] # List to store boolean values indicating task success for each trial (used for evaluation type 2)
+  randomisation_range = 0.03 # Range of randomisation for object initial positions in evaluation type 2 (applied on x and y axes)
+
+  # Variable shared with other thread declared as global to be accessible and modifiable from both threads.
+  global trial_index
 
   # Defining initial right-arm joint target positions.
   right_arm_joint_refs = utilities._joint_state_refs(mj_model, ctrl.right_arm_joint_names)
@@ -219,8 +280,8 @@ def SimulationThread():
   task1_step = 0
   task1_cylind_grasp_pos_thresh = 0.003 # position error threshold to get in position to grasp the cylinder (used to enter step 1)
   task1_cylind_drop_pos_thresh = 0.003 # position error threshold to align cylinder with the blue basket (used to enter step 2)
-  task1_cube_drop_pos_thresh = 0.01 # position error threshold for subsequent steps
-  task1_cube_grasp_pos_thresh = 0.015 # position error threshold to get in position to grasp the cube (used to enter step 4)
+  task1_cube_drop_pos_thresh = 0.01 # position error threshold to align cube with the red basket (used to enter step 7)
+  task1_cube_grasp_pos_thresh = 0.011 # position error threshold to get in position to grasp the cube (used to enter step 4)
   task1_cylind_rot_thresh = 0.08 # orientation error threshold to get in position to grasp the cylinder (used to enter step 0)
   task1_cylind_transfer_delay_s = 2.0 # wait after grasping the cylinder before moving to the blue basket (used to enter step 1)
   task1_retarget_cube_delay_s = 1.0 # wait after releasing the cylinder before retargeting the cube (used to enter step 3)
@@ -281,15 +342,6 @@ def SimulationThread():
       raise RuntimeError("Body not found in model: coaster")
 
   task_ended = False # Flag to indicate when the task is completed (used to stop IK updates and print final message)
-  first_print_after_task_end = True # Flag to print final message only once after task completion
-
-  # -------------------------------------------------------------------- #
-  #                       Printing model info
-  # -------------------------------------------------------------------- #
-
-  print("nu =", mj_model.nu) # number of actuators -> dim(ctrl)
-  print("nq =", mj_model.nq) # number of generalized coordinates (joint positions + floating base pose) -> dim(qpos)
-  print("nv =", mj_model.nv) # number of generalized velocities (joint velocities + floating base velocity) -> dim(qvel)
 
   # ------------------------------------------------------------------- #
   # Simulation loop using launch_passive (MuJoCo's built-in viewer)
@@ -419,6 +471,7 @@ def SimulationThread():
                 ctrl.post_grasp_lift_target_world = lift_start_world.copy()
                 ctrl.post_grasp_lift_active = True
                 task1_step = 1
+                task_start_time = time.time()  # Record the start time of the task
                 print("[TASK1] Grasp condition met -> close grip and lift")
 
             elif (task1_step == 1) and (task1_close_time is not None):
@@ -455,6 +508,13 @@ def SimulationThread():
               #  the grip is closed and the lift phase is initiated.
               if pos_err_norm <= task1_cube_grasp_pos_thresh:
                 ctrl._cache_finger_actuators("blue_cube")
+                # Re-prime grip interpolation state so cube closing always starts from a known open baseline.
+                ctrl.grip_transition_duration_s = 1.0
+                ctrl.grip_closed = False
+                ctrl.grip_close_time = None
+                ctrl.grip_transition_start_time = None
+                ctrl.grip_alpha_start = 0.0
+                ctrl.grip_alpha_goal = 0.0
                 ctrl.set_grip_state(True)
                 task1_close_time = time.time()
                 task1_step = 5
@@ -671,16 +731,48 @@ def SimulationThread():
           right_arm_q_des = right_arm_q_des + dq * ik_dt
           right_arm_q_des = np.clip(right_arm_q_des, right_arm_q_min, right_arm_q_max)
 
-          if ((control_step % 200 == 0) and not task_ended):
-            print(
-              f"[IK] |pos_err|={pos_err_norm:.4f} "
-              f"|rot_err|={np.rad2deg(theta_hold):.2f} deg "
-              f"|x_dot|={float(np.linalg.norm(x_dot)):.4f} "
-              f"|dq|={float(np.linalg.norm(dq)):.4f}"
-            )
-          elif (task_ended and first_print_after_task_end):
-            first_print_after_task_end = False
-            print("[INFO] Close application or press SPACE to choose the task and restart the simulation.")
+          if task_ended:
+            task_end_time = time.time()  # Record the end time of the task
+            if task_start_time is not None:
+              task_completion_times_type1.append(task_end_time - task_start_time)  # Compute task duration
+            else:
+              print("[WARN] task_start_time is None at task end; skipping duration logging")
+            trial_index += 1  # Move to the next trial slot (shared across threads).
+            trial_count += 1
+            if trial_count >= n_trials_per_task:
+              print(f"[INFO] All {n_trials_per_task} trials completed.")
+              # write info to log file...
+              viewer.close()  # Close the viewer after all trials are done
+              break
+            else:
+              right_arm_q_des, current_grasp_rot_world = utilities.reset(
+                mj_model,
+                mj_data,
+                ctrl,
+                right_arm_q_min,
+                right_arm_q_max,
+                initial_sim_state,
+                initial_grasp_rot_world,
+              )
+              task1_step = 0
+              task1_close_time = None 
+              task1_drop_open_time = None
+              task1_transfer_target_world1 = None
+              task1_transfer_target_world2 = None
+
+              task2_step = 0
+              task2_close_time = None
+              task2_lift_done_time = None
+              task2_hold_target_world = None
+              task2_pre_grasp_palm_z = None
+              task2_transfer_target_world = None
+              task2_release_target_world = None
+              task2_opening_target_world = None
+              task_ended = False
+              task_start_time = None
+              task_end_time = None
+              print(f"[INFO] Starting trial {trial_count + 1} of {n_trials_per_task}...")
+            
         elif control_step % 200 == 0:
           print("[IK] Waiting startup settle before enabling IK...")
 
@@ -728,12 +820,73 @@ def PhysicsViewerThread():
 
         # --- exiting critical section --- #
         locker.release()
-        time.sleep(startup_config.VIEWER_DT) # Sleep to limit viewer thread loop frequency (and avoid excessive CPU usage, since sync is not blocking in this setup).
+        time.sleep(evaluation_config.VIEWER_DT) # Sleep to limit viewer thread loop frequency (and avoid excessive CPU usage, since sync is not blocking in this setup).
+
+def RollPitchReaderThread():
+    # Thread to read roll and pitch of joints from the IMU sensor and save the highest value for later evaluation.
+    # Joints read are (8): left hip, left knee, left ankle, right hip, right knee, right ankle, waist, torso
+    global trial_index
+
+    # Mapping order of joints is fixed and matches the layout of arrays used to store the roll and pitch maxima values:
+    # [left hip, left knee, left ankle, right hip, right knee, right ankle, waist, torso]
+    # (stored values as pair of roll and pitch to match pair of arrays. 
+    # However certain joints do not have either roll or pitch, so None is used in those cases)
+    tracked = [
+      ("left_hip_roll_joint", "left_hip_pitch_joint"),
+      (None, "left_knee_joint"),
+      ("left_ankle_roll_joint", "left_ankle_pitch_joint"),
+      ("right_hip_roll_joint", "right_hip_pitch_joint"),
+      (None, "right_knee_joint"),
+      ("right_ankle_roll_joint", "right_ankle_pitch_joint"),
+      ("waist_roll_joint", "waist_pitch_joint"),
+      (None, None),  # torso is read from base (pelvis) quaternion
+    ]
+
+    tracked_idx = [(utilities._joint_qpos_index(mj_model, r), utilities._joint_qpos_index(mj_model, p)) for r, p in tracked]
+
+    while viewer.is_running():
+        locker.acquire()
+        # --- critical section start (accessing shared variables) --- #
+
+        ti = int(trial_index)
+        if 0 <= ti < n_trials_per_task:
+          # Valid trial index, read roll and pitch values and update maxima.
+
+          # Read roll and pitch from joint states (radians).
+          # We track maxima in absolute value over each trial.
+          roll_vals = np.zeros(8, dtype=np.float32)
+          pitch_vals = np.zeros(8, dtype=np.float32)
+
+          for i, (r_idx, p_idx) in enumerate(tracked_idx):
+            if r_idx is not None:
+              roll_vals[i] = float(mj_data.qpos[r_idx])
+            if p_idx is not None:
+              pitch_vals[i] = float(mj_data.qpos[p_idx])
+
+          # Torso roll/pitch from base(pelvis) orientation quaternion.
+          torso_roll, torso_pitch = utilities._quat_to_roll_pitch(mj_data.qpos[3:7])
+          roll_vals[7] = torso_roll
+          pitch_vals[7] = torso_pitch
+
+          max_roll_measured_type1[ti] = np.maximum(
+            max_roll_measured_type1[ti],
+            np.abs(roll_vals).astype(np.float32),
+          )
+          max_pitch_measured_type1[ti] = np.maximum(
+            max_pitch_measured_type1[ti],
+            np.abs(pitch_vals).astype(np.float32),
+          )
+
+        # --- exiting critical section --- #
+        locker.release()
+        time.sleep(0.01) # Sleep to limit IMU reading frequency (and avoid excessive CPU usage).
 
 
 if __name__ == "__main__":
     viewer_thread = Thread(target=PhysicsViewerThread)
     sim_thread = Thread(target=SimulationThread)
+    roll_pitch_reader_thread = Thread(target=RollPitchReaderThread)
 
     viewer_thread.start()
     sim_thread.start()
+    roll_pitch_reader_thread.start()

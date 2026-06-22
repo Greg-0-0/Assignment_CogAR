@@ -1,8 +1,8 @@
-<mujoco model="g1_table_red_block">
+<mujoco model="first_task_scene">
   <!--
-    G1 Table Red Block scene — converted from LuckyEngine .hscene
+    First task scene
     Contains: G1 robot, ground plane, table, red cylindrical block (freejoint),
-              head camera, wrist camera, overhead camera, tracking camera.
+              blue cube block (freejoint), red and blue baskets.
   -->
 
   <include file="g1.xml"/>
@@ -62,31 +62,29 @@
     </body>
 
     <!-- Red cylinder (dynamic, with freejoint) -->
-    <!-- Hazel: pos=[0.235, 0.85, -0.026], scale=[0.03, 0.07, 0.03] -->
-    <!-- MuJoCo Z-up: pos=[-0.12, 0.2, 0.78] -->
       <body name="red_cylinder" pos="-0.27 -0.05 0.813">
-      <freejoint name="red_cylinder_joint"/>
-      <geom name="red_cylinder_geom" type="cylinder" size="0.02 0.05"
-            material="red_plastic" density="100"
-            contype="1" conaffinity="1" friction="3 0.1 0.01"/>
-      <!-- Thin box caps to reinforce top/bottom collision without tipping -->
-      <geom name="red_cap_top" type="box" size="0.018 0.018 0.002" pos="0 0 0.05"
-            rgba="0.85 0.1 0.1 1" density="10"
-            contype="1" conaffinity="1" friction="3 0.1 0.01"/>
-      <geom name="red_cap_middle" type="box" size="0.018 0.018 0.002" pos="0 0 0.03"
-            rgba="0.85 0.1 0.1 1" density="10"
-            contype="1" conaffinity="1" friction="3 0.1 0.01"/>
-      <geom name="red_cap_bot" type="box" size="0.018 0.018 0.002" pos="0 0 -0.05"
-            rgba="0.85 0.1 0.1 1" density="10"
-            contype="1" conaffinity="1" friction="3 0.1 0.01"/>
-    </body>
+            <freejoint name="red_cylinder_joint"/>
+            <geom name="red_cylinder_geom" type="cylinder" size="0.02 0.05"
+                  material="red_plastic" density="100"
+                  contype="1" conaffinity="1" friction="3 0.1 0.01"/>
+            <!-- Thin box caps to reinforce top/bottom collision without tipping -->
+            <geom name="red_cap_top" type="box" size="0.018 0.018 0.002" pos="0 0 0.05"
+                  rgba="0.85 0.1 0.1 1" density="10"
+                  contype="1" conaffinity="1" friction="3 0.1 0.01"/>
+            <geom name="red_cap_middle" type="box" size="0.018 0.018 0.002" pos="0 0 0.03"
+                  rgba="0.85 0.1 0.1 1" density="10"
+                  contype="1" conaffinity="1" friction="3 0.1 0.01"/>
+            <geom name="red_cap_bot" type="box" size="0.018 0.018 0.002" pos="0 0 -0.05"
+                  rgba="0.85 0.1 0.1 1" density="10"
+                  contype="1" conaffinity="1" friction="3 0.1 0.01"/>
+      </body>
 
     <!-- Blue cube: directly in front of robot, on the table -->
       <body name="blue_cube" pos="-0.27 -0.05 0.7555">
             <freejoint name="blue_cube_joint"/>
             <geom name="blue_cube_geom" type="box" size="0.0225 0.0225 0.0225"
-                              material="blue_plastic" density="160"
-                              contype="1" conaffinity="1" friction="2.5 0.15 0.02"/>
+                  material="blue_plastic" density="160" 
+                  contype="1" conaffinity="1" friction="2.5 0.15 0.02"/>
     </body>
 
     <!-- Red basket on robot right side of the stacked objects -->

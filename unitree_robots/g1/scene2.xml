@@ -1,8 +1,8 @@
-<mujoco model="g1_table_red_block">
+<mujoco model="second_task_scene">
   <!--
-    G1 Table Red Block scene — converted from LuckyEngine .hscene
-    Contains: G1 robot, ground plane, table, red cylindrical block (freejoint),
-              head camera, wrist camera, overhead camera, tracking camera.
+    Second task scene
+    Contains: G1 robot, ground plane, table, mug object with handle (freejoint),
+              coaster for placing.
   -->
 
   <include file="g1.xml"/>
@@ -81,6 +81,7 @@
     </body>
 
     <!-- Coaster on right-hand side -->
+    <!-- Thin box caps to reinforce top/bottom collision without tipping -->
     <body name="coaster" pos="-0.21 -0.2 0.736">
       <geom name="coaster_geom" type="cylinder" size="0.045 0.003"
             material="coaster_cork"
