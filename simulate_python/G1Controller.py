@@ -505,3 +505,4 @@ class G1Controller:
     self.post_grasp_lift_start_world = None
     self.post_grasp_lift_final_world = None
     print(f"[GRIP] Right hand: {'CLOSED' if self.grip_closed else 'OPEN'}")
+    
