@@ -248,7 +248,7 @@ def _is_task_successful(is_scene1_task, is_scene2_task, mj_data, task1_blue_cube
 
 def _write_evaluation_log(n_trials_per_task, is_scene1_task, is_scene2_task, evaluation_type,
                           task_completion_times, task_success,
-                          max_pitch_measured, max_roll_measured, EVAL_LOG_PATH):
+                          max_pitch_measured, max_roll_measured, position_error_eval, EVAL_LOG_PATH):
   """Writes a message to the log file with a timestamp."""
   col_w = 14
   label_w = 22
@@ -295,13 +295,44 @@ def _write_evaluation_log(n_trials_per_task, is_scene1_task, is_scene2_task, eva
       per_trial = [float(max_roll_measured[t][j]) for t in range(n_trials_per_task)]
       _write_row(log_file, left_label, per_trial, n_trials_per_task, col_w, label_w, decimals=4)
 
+    if is_scene2_task:
+      log_file.write("\n")
+      _write_row(log_file, "Position error(mug)", position_error_eval, n_trials_per_task, col_w, label_w, decimals=4)
+
+    # Computing mean values of completion time, max pitch, max roll, and position error(when applicable) +
+    #  rate of each success case for the current evaluation (set of trials).
+    log_file.write("\n")
+    average_completion_time = (
+      sum(task_completion_times) / len(task_completion_times)
+      if task_completion_times
+      else None
+    )
+    left_label1 = f"Average completion time: {_fmt_val(average_completion_time, 4)} - "
+    left_label2 = f"Average max pitch: {_fmt_val(np.mean(max_pitch_measured), 4)} - "
+    left_label3 = f"Average max roll: {_fmt_val(np.mean(max_roll_measured), 4)} - "
+    left_label4 = f"Average position error(mug): {_fmt_val(np.mean(position_error_eval), 4)} " if is_scene2_task else ""
+    left_label5 = ""
+    if is_scene2_task:
+      left_label5 = f"Success rate: {task_success.count('Success') / len(task_success) * 100:.2f}% - " if task_success else "Success rate: n/a - "
+      left_label6 = f"Failure rate: {task_success.count('Failure') / len(task_success) * 100:.2f}% " if task_success else "Failure rate: n/a"
+      left_label5 = f"{left_label5}{left_label6}"
+    elif is_scene1_task:
+      left_label6 = f"Success-Success rate: {task_success.count('Success-Success') / len(task_success) * 100:.2f}% - " if task_success else "Success-Success rate: n/a"
+      left_label7 = f"Success-Failure rate: {task_success.count('Success-Failure') / len(task_success) * 100:.2f}% - " if task_success else "Success-Failure rate: n/a"
+      left_label8 = f"Failure-Success rate: {task_success.count('Failure-Success') / len(task_success) * 100:.2f}% - " if task_success else "Failure-Success rate: n/a"
+      left_label9 = f"Failure-Failure rate: {task_success.count('Failure-Failure') / len(task_success) * 100:.2f}% " if task_success else "Failure-Failure rate: n/a"
+      left_label5 = f"{left_label6}{left_label7}{left_label8}{left_label9}"
+    left_label0 = f"{left_label1}{left_label2}{left_label3}{left_label4}"
+    log_file.write(f"{left_label0}\n")
+    log_file.write(f"{left_label5}\n")
+
     if evaluation_type == 2:
       if is_scene1_task:
         # Executing evaluation on task 2.
         log_file.write("\n")
         log_file.write("[ORDER] Execute task_2")
       elif is_scene2_task:
-        # Evaluation completed for both tasks. Next evaluation will start with task 1 again.
+        # Evaluation completed for both tasks. Next evaluation will start with task 1 again (executed by user).
         log_file.write("\n")
         log_file.write("[INFO] Evaluation completed for both tasks")
         log_file.write("\n")

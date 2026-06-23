@@ -189,7 +189,7 @@ viewer = mujoco.viewer.launch_passive(mj_model, mj_data)
 # Lists of elements with 8 values each (left hip, left knee, left ankle, right hip, right knee, right ankle,
 #  waist, torso) to store maximum roll and pitch measured during each trial (used for evaluation type 1 and 2)
 # (computed in a separate thread for highest frequency of measurements)
-n_trials_per_task = 1 # Number of trials to execute for each task and evaluation type
+n_trials_per_task = 20 # Number of trials to execute for each task and evaluation type
 max_roll_measured = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
 max_pitch_measured = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
 trial_index = 0 # Shared current trial slot/counter for measurement and simulation threads.
@@ -272,10 +272,10 @@ def SimulationThread():
   #         3. grasp from cube 4.  
   #         4. transfer and release it in blue basket
   task1_step = 0
-  task1_cylind_grasp_pos_thresh = 0.003 # position error threshold to get in position to grasp the cylinder (used to enter step 1)
-  task1_cylind_drop_pos_thresh = 0.003 # position error threshold to align cylinder with the blue basket (used to enter step 2)
+  task1_cylind_grasp_pos_thresh = 0.005 # position error threshold to get in position to grasp the cylinder (used to enter step 1)
+  task1_cylind_drop_pos_thresh = 0.005 # position error threshold to align cylinder with the blue basket (used to enter step 2)
   task1_cube_drop_pos_thresh = 0.01 # position error threshold to align cube with the red basket (used to enter step 7)
-  task1_cube_grasp_pos_thresh = 0.011 # position error threshold to get in position to grasp the cube (used to enter step 4)
+  task1_cube_grasp_pos_thresh = 0.0125 # position error threshold to get in position to grasp the cube (used to enter step 4)
   task1_cylind_rot_thresh = 0.08 # orientation error threshold to get in position to grasp the cylinder (used to enter step 0)
   task1_cylind_transfer_delay_s = 2.0 # wait after grasping the cylinder before moving to the blue basket (used to enter step 1)
   task1_retarget_cube_delay_s = 1.0 # wait after releasing the cylinder before retargeting the cube (used to enter step 3)
@@ -313,7 +313,7 @@ def SimulationThread():
   #         3. transfer mug on coaster
   #         4. release mug on coaster
   task2_step = 0
-  task2_pos_thresh = 0.015 # position error threshold to reach mug handle (used to enter step 0)
+  task2_pos_thresh = 0.01 # position error threshold to reach mug handle (used to enter step 0)
   task2_rot_thresh = np.deg2rad(0.2) # orientation error threshold to reach mug handle (used to enter step 0)
   task2_grip_settle_delay_s = 2.0 # wait after grasping the mug before lifting it to secure firm grip (used to enter step 1)
   task2_post_lift_wait_s = 2.0 # wait after lifting the mug before proceeding (used to enter step 2)
@@ -348,6 +348,8 @@ def SimulationThread():
 
   def reset_simulation():
     """Resets the simulation to the initial state and reinitializes task variables."""
+
+    # Declare nonlocal variables to reset them using this nested function within the simulation loop at the end of each trial.
     nonlocal right_arm_q_des, current_grasp_rot_world
     nonlocal task1_step, task1_close_time, task1_drop_open_time
     nonlocal task1_transfer_target_world1, task1_transfer_target_world2
@@ -767,6 +769,12 @@ def SimulationThread():
                 task2_distancing_target_world = mj_data.site_xpos[ctrl.right_palm_site_id].copy()
                 task2_distancing_target_world[0] -= 0.1
                 task2_distancing_target_world[1] -= 0.005
+                
+                # Computing distance between mug and coaster for evaluation purposes (error).
+                coaster_pos = mj_data.xpos[task2_coaster_body_id].copy()
+                mug_pos = mj_data.xpos[target_body_id].copy()
+                mug_coaster_distance = np.linalg.norm(mug_pos - coaster_pos)
+                position_error_eval.append(mug_coaster_distance)
                 task2_step = 7
                 task_ended = True
                 print("[TASK2] End")
@@ -820,7 +828,7 @@ def SimulationThread():
               utilities._write_evaluation_log(
                 n_trials_per_task, is_scene1_task, is_scene2_task, evaluation_type,
                 task_completion_times, task_success,
-                max_pitch_measured, max_roll_measured, evaluation_log_path
+                max_pitch_measured, max_roll_measured, position_error_eval, evaluation_log_path
               )
 
               if is_scene1_task:
@@ -877,6 +885,21 @@ def SimulationThread():
 
       control_step += 1
       sim_time += mj_model.opt.timestep
+  
+  # Viewer has been stopped, checking if last message printed in evaluations.py is an order for executing next task.
+  with open(EVAL_LOG_PATH, "a+", encoding="utf-8") as log_file:
+    log_file.seek(0)  # go to beginning of file
+
+    lines = log_file.readlines() # read all lines in the file
+    last_line = lines[-1].strip() if lines else ""
+
+    if (
+        "[ORDER] Execute task_1" not in last_line
+        and "[ORDER] Execute task_2" not in last_line
+    ):
+      # Artificially write order for next execution (by default task 1)
+      log_file.write(f"[ORDER] Execute task_1\n")
+
 
 # Main thread for rendering and synchronizing with the physics thread, also used to set up the camera view.
 def PhysicsViewerThread():
