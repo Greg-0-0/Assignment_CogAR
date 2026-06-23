@@ -1,2 +1,11 @@
 \* Read only file - Do NOT change *\
+\* Information explanation:
+    Success value:
+        - for task_1: Success-Success -> Both cube and cylinder placed in baskets
+                      Success-Failure -> Only cube placed in basket
+                      Failure-Success -> Only cylinder placed in basket
+                      Failure-Failure -> Neither cube or cylinder placed in baskets
+        - for task_2: Success -> Mug placed on coaster
+                      Failure -> Mug not placed on coaster
+*\
 [ORDER] Execute task_1

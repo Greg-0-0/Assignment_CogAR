@@ -1,3 +1,6 @@
+from time import time
+from datetime import datetime
+
 import numpy as np
 
 import mujoco
@@ -91,15 +94,17 @@ def _solve_damped_pseudoinverse_dq(jacobian, task_velocity, damping):
 
   return dq.astype(np.float32)
 
+# --------------------------------------------------------------------------- #
+#               Functions used only in evaluation.py
+# --------------------------------------------------------------------------- #
 
-# Fucntion used only in evaluation.py to reset the simulation state between evaluation runs.
-def reset(mj_model, mj_data, ctrl, right_arm_q_min, right_arm_q_max,
-          initial_sim_state, initial_grasp_rot_world):
+def reset(mj_model, mj_data, ctrl, right_arm_q_min, right_arm_q_max, initial_sim_state, initial_grasp_rot_world,
+            evaluation_type, is_scene1_task, is_scene2_task,randomisation_range):
   """Resets variables and structures that have been modified during simulation.
      Necessary for executing multiple evaluation runs in the same process.
      (Used only in evaluation.py)"""
 
-  # Restore full MuJoCo data state so free bodies (objects) return to their original pose.
+  # Always restore full MuJoCo data state first so every trial starts from the same baseline.
   np.copyto(mj_data.qpos, initial_sim_state["qpos"])
   np.copyto(mj_data.qvel, initial_sim_state["qvel"])
   np.copyto(mj_data.act, initial_sim_state["act"])
@@ -108,6 +113,21 @@ def reset(mj_model, mj_data, ctrl, right_arm_q_min, right_arm_q_max,
   np.copyto(mj_data.mocap_pos, initial_sim_state["mocap_pos"])
   np.copyto(mj_data.mocap_quat, initial_sim_state["mocap_quat"])
   mj_data.time = float(initial_sim_state["time"])
+
+  if evaluation_type == 2:
+    # Randomize initial object positions only on x/y while preserving z and orientation.
+    dx, dy = np.random.uniform(-randomisation_range, randomisation_range, size=2)
+    if is_scene1_task:
+      # Keep cylinder and cube relative placement fixed by using the same offset for both.
+      _apply_xy_offset_to_free_body(mj_model, mj_data, "blue_cube", dx, dy)
+      _apply_xy_offset_to_free_body(mj_model, mj_data, "red_cylinder", dx, dy)
+    elif is_scene2_task:
+      # In scene 2 randomize the mug x/y spawn.
+      mug_name = "mug_object"
+      if mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, mug_name) < 0:
+        mug_name = "mug"
+      _apply_xy_offset_to_free_body(mj_model, mj_data, mug_name, dx, dy)
+
   mujoco.mj_forward(mj_model, mj_data)
 
   # Defining initial right-arm joint target positions.
@@ -152,6 +172,161 @@ def reset(mj_model, mj_data, ctrl, right_arm_q_min, right_arm_q_max,
 
   return right_arm_q_des, current_grasp_rot_world
 
+def _apply_xy_offset_to_free_body(mj_model, mj_data, body_name, dx, dy):
+    body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, body_name)
+    if body_id < 0:
+      raise RuntimeError(f"Body not found in model: {body_name}")
+    first_joint_id = int(mj_model.body_jntadr[body_id])
+    if first_joint_id < 0 or mj_model.jnt_type[first_joint_id] != mujoco.mjtJoint.mjJNT_FREE:
+      raise RuntimeError(f"Body {body_name} does not have a free joint for position randomization")
+    qpos_adr = int(mj_model.jnt_qposadr[first_joint_id])
+    mj_data.qpos[qpos_adr + 0] += float(dx)
+    mj_data.qpos[qpos_adr + 1] += float(dy)
+
+def _compute_task_completion_time(task_start_time, task_end_time, task_completion_times):
+  """Computes the task completion time in seconds given the start time and end time."""
+
+  if task_start_time is None or task_end_time is None:
+    return None
+  task_completion_times.append(float(task_end_time - task_start_time))
+  return task_completion_times
+
+def _is_task_successful(is_scene1_task, is_scene2_task, mj_data, task1_blue_cube_body_id,
+                        task1_red_basket_body_id, task1_blue_basket_body_id,
+                        target_body_id, task2_coaster_body_id,
+                        task_success):
+  """Determines the type of task success based on the the final positions of objects with respect 
+    to their target position (manages both tasks)."""
+
+  if is_scene1_task:
+    blue_cube_pos = mj_data.xpos[task1_blue_cube_body_id]
+    red_basket_pos = mj_data.xpos[task1_red_basket_body_id]
+    cube_in_red_basket = (
+      abs(blue_cube_pos[0] - red_basket_pos[0]) < 0.05 and
+      abs(blue_cube_pos[1] - red_basket_pos[1]) < 0.05 and
+      abs(blue_cube_pos[2] - red_basket_pos[2]) < 0.05
+    )
+
+    red_cylinder_pos = mj_data.xpos[target_body_id]  # Assuming target_body_id corresponds to the red cylinder
+    blue_basket_pos = mj_data.xpos[task1_blue_basket_body_id]
+    cylinder_in_blue_basket = (
+      abs(red_cylinder_pos[0] - blue_basket_pos[0]) < 0.05 and
+      abs(red_cylinder_pos[1] - blue_basket_pos[1]) < 0.05 and
+      abs(red_cylinder_pos[2] - blue_basket_pos[2]) < 0.05
+    )
+    if cube_in_red_basket and cylinder_in_blue_basket:
+      print("[TASK1] Success-Success: Cube and cylinder are in the correct baskets.")
+      task_success.append("Success-Success")
+    elif cube_in_red_basket:
+      print("[TASK1] Success-Failure: Cube is in the red basket, but cylinder is NOT in the blue basket.")
+      task_success.append("Success-Failure")
+    elif cylinder_in_blue_basket:
+      print("[TASK1] Failure-Success: Cube is NOT in the red basket, but cylinder is in the blue basket.")
+      task_success.append("Failure-Success")
+    else:
+      print("[TASK1] Failure-Failure: Neither cube nor cylinder are in the correct baskets.")
+      task_success.append("Failure-Failure")
+    
+    return task_success
+    
+  elif is_scene2_task:
+    mug_pos = mj_data.xpos[target_body_id]  # Assuming target_body_id corresponds to the mug
+    coaster_pos = mj_data.xpos[task2_coaster_body_id]
+    mug_on_coaster = (
+      abs(mug_pos[0] - coaster_pos[0]) < 0.1 and
+      abs(mug_pos[1] - coaster_pos[1]) < 0.1 and
+      abs(mug_pos[2] - coaster_pos[2]) < 0.1
+    )
+    if mug_on_coaster:
+      print("[TASK2] Success: Mug is on the coaster.")
+      task_success.append("Success")
+    else:
+      print("[TASK2] Failure: Mug is NOT on the coaster.")
+      task_success.append("Failure")
+
+    return task_success
+
+def _write_evaluation_log(n_trials_per_task, is_scene1_task, is_scene2_task, evaluation_type,
+                          task_completion_times, task_success,
+                          max_pitch_measured, max_roll_measured, EVAL_LOG_PATH):
+  """Writes a message to the log file with a timestamp."""
+  col_w = 14
+  label_w = 22
+  joint_labels = [
+    "L_HIP",
+    "L_KNE",
+    "L_ANK",
+    "R_HIP",
+    "R_KNE",
+    "R_ANK",
+    "WAIST",
+    "TORSO",
+  ]
+
+  ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+  trial_cols = "".join(f"{i:>{col_w}d}" for i in range(1, n_trials_per_task + 1))
+  total_width = label_w + col_w * n_trials_per_task
+
+  with open(EVAL_LOG_PATH, "a", encoding="utf-8") as log_file:
+    log_file.write("\n")
+
+    print(f"[INFO] All {n_trials_per_task} trials for task {1 if is_scene1_task else 2} with evaluation type {evaluation_type} completed.")
+    print(f"[INFO] Printing evaluation results to log file: quantitative_evaluation/evaluations.log")
+    log_file.write(
+      f"[{ts}] [INFO] Evaluation results for task {1 if is_scene1_task else 2} with evaluation type {evaluation_type}:\n"
+    )
+    
+    log_file.write(f"{'Trial number':<{label_w}}{trial_cols}\n")
+    log_file.write(f"{'-' * total_width}\n")
+    _write_row(log_file, "Completion time", task_completion_times, n_trials_per_task, col_w, label_w, decimals=4)
+    log_file.write("\n")
+    _write_row(log_file, "Success value", task_success, n_trials_per_task, col_w, label_w, decimals=0)
+    log_file.write("\n")
+
+    for j, joint_name in enumerate(joint_labels):
+      left_label = f"Max pitch {joint_name}" if j == 0 else f"{'':10}{joint_name}"
+      per_trial = [float(max_pitch_measured[t][j]) for t in range(n_trials_per_task)]
+      _write_row(log_file, left_label, per_trial, n_trials_per_task, col_w, label_w, decimals=4)
+
+    log_file.write("\n")
+
+    for j, joint_name in enumerate(joint_labels):
+      left_label = f"Max roll  {joint_name}" if j == 0 else f"{'':10}{joint_name}"
+      per_trial = [float(max_roll_measured[t][j]) for t in range(n_trials_per_task)]
+      _write_row(log_file, left_label, per_trial, n_trials_per_task, col_w, label_w, decimals=4)
+
+    if evaluation_type == 2:
+      if is_scene1_task:
+        # Executing evaluation on task 2.
+        log_file.write("\n")
+        log_file.write("[ORDER] Execute task_2")
+      elif is_scene2_task:
+        # Evaluation completed for both tasks. Next evaluation will start with task 1 again.
+        log_file.write("\n")
+        log_file.write("[INFO] Evaluation completed for both tasks")
+        log_file.write("\n")
+        log_file.write("[ORDER] Execute task_1")
+
+def _fmt_val(v, decimals=4):
+  """ Formats a value for logging, handling None and NaN cases."""
+  
+  if v is None:
+    return "n/a"
+  try:
+    if isinstance(v, (float, np.floating)) and np.isnan(v):
+      return "n/a"
+    return f"{float(v):.{decimals}f}"
+  except (TypeError, ValueError):
+    return str(v)
+
+def _write_row(log_file, left_label, values, n_trials_per_task, col_w, label_w, decimals=4):
+  """Writes a row of values to the log file with a left-aligned label."""
+
+  clipped = list(values)[:n_trials_per_task]
+  while len(clipped) < n_trials_per_task:
+    clipped.append(None)
+  row = "".join(f"{_fmt_val(v, decimals):>{col_w}}" for v in clipped)
+  log_file.write(f"{left_label:<{label_w}}{row}\n")
 
 # ------------------------------------------------------------------------------------- #
 # Joint state and orientation utilities (used by evaluation.py in RollPitchReaderThread)

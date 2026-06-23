@@ -23,8 +23,8 @@ def get_robot_scene(current_instruction: str) -> str:
         print("[CONFIG] Current evaluation instruction: task2")
         return _scene_path("scene2.xml")
     else:
-        print(f"[CONFIG] Unrecognized evaluation instruction: {current_instruction}. Terminating.")
-        sys.exit(1)
+        print(f"[CONFIG] Unrecognized evaluation instruction: {current_instruction}. Defaulting to task1.")
+        return _scene_path("scene1.xml")
 
 DOMAIN_ID = 1 # Domain id
 INTERFACE = "lo" # Interface 

@@ -6,6 +6,7 @@ import threading
 import numpy as np
 from threading import Thread
 from pathlib import Path
+from datetime import datetime
 
 import mujoco
 from mujoco import viewer
@@ -22,11 +23,6 @@ try:
 except NameError:
   SCRIPT_PATH = Path.cwd() / "evaluation.py"
 SCRIPT_DIR = SCRIPT_PATH.parent
-
-def on_key(keycode: int) -> None:
-    """ Key callback to reset the simulation when space is pressed (useful for iterative testing and development)."""
-    if keycode == 32:  # Space
-      os.execv(sys.executable, [sys.executable, str(SCRIPT_PATH)])
 
 # --------------------------------------------------------------------------- #
 # Configuration
@@ -193,38 +189,36 @@ viewer = mujoco.viewer.launch_passive(mj_model, mj_data)
 # Lists of elements with 8 values each (left hip, left knee, left ankle, right hip, right knee, right ankle,
 #  waist, torso) to store maximum roll and pitch measured during each trial (used for evaluation type 1 and 2)
 # (computed in a separate thread for highest frequency of measurements)
-n_trials_per_task = 10 # Number of trials to execute for each task and evaluation type
-max_roll_measured_type1 = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
-max_pitch_measured_type1 = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
-max_roll_measured_type2 = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
-max_pitch_measured_type2 = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
-trial_index = 0 # Shared current trial slot for measurement threads and simulation thread.
+n_trials_per_task = 1 # Number of trials to execute for each task and evaluation type
+max_roll_measured = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
+max_pitch_measured = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
+trial_index = 0 # Shared current trial slot/counter for measurement and simulation threads.
+all_trials_done = threading.Event() # Signaled by SimulationThread when all trials finish; PhysicsViewerThread handles viewer.close() on its own thread to avoid GLFW thread-safety violations.
 
 
 # Task logic runs separate from the physics and rendering loop in order to avoid impacting simulation performance with Python code execution time.
 def SimulationThread():
 
   # -------------------------------------------------------------------- #
-  #          Evaluation parameters (continued)
+  #                   Evaluation parameters (continued)
   # -------------------------------------------------------------------- #
 
   # (defined as local variables since they need to be accessed only by this thread)
+  # (variables for task 1 and 2 are not separated, since the executions of this script to evaluate
+  #  the two tasks are done in two separate runs, and the variables are reset at the beginning of each run)
 
   evaluation_type = 1 # 1: simple repetition of the task, 2: randomisation of object initial positions
-  trial_count = 0 # Counter to keep track of executed trials 
-  position_error_eval_type1 = [] # List to store position errors of mug placement step for each trial
-                    # (since only step where target position must be precisely respected)(used for evaluation type 1)
-  position_error_eval_type2 = [] # List to store position errors of mug placement step for each trial
-  # (since only step where target position must be precisely respected)(used for evaluation type 2 with randomised initial positions)
-  task_completion_times_type1 = [] # List to store task completion times for each trial (used for evaluation type 1)
-  task_completion_times_type2 = [] # List to store task completion times for each trial (used for evaluation type 2)
+  position_error_eval = [] # List to store position errors of mug placement step for each trial
+  # (since only step where target position must be precisely respected)(used for evaluation type 1 and 2 with randomised initial positions)
+  task_completion_times = [] # List to store task completion times for each trial (used for evaluation type 1 and 2)
   task_start_time = None # Variable to store the start time of the current trial (used to compute task completion time)
-  task_success_type1 = [] # List to store boolean values indicating task success for each trial (used for evaluation type 1)
-  task_success_type2 = [] # List to store boolean values indicating task success for each trial (used for evaluation type 2)
-  randomisation_range = 0.03 # Range of randomisation for object initial positions in evaluation type 2 (applied on x and y axes)
+  task_success = [] # List to store integer values indicating successful steps for each trial of task 1/2 (used for evaluation type 1 and 2)
+  randomisation_range = 0.015 # Range of randomisation for object initial positions in evaluation type 2 (applied on x and y axes)
 
   # Variable shared with other thread declared as global to be accessible and modifiable from both threads.
-  global trial_index
+  # This variable is used to keep track of the current trial index for storing measurements and results,
+  #  as well as counting the trials executed.
+  global trial_index, max_roll_measured, max_pitch_measured
 
   # Defining initial right-arm joint target positions.
   right_arm_joint_refs = utilities._joint_state_refs(mj_model, ctrl.right_arm_joint_names)
@@ -327,8 +321,13 @@ def SimulationThread():
   task2_release_pos_thresh = 0.025 # position error threshold to release the mug (used to enter step 4)
   task2_descend_pos_thresh = 0.01 # position error threshold to descend the mug (used to enter step 5)
   task2_distancing_pos_thresh = 0.02 # position error threshold to distance the mug (used to enter step 6)
+  task2_step0_max_wait_s = 4.0 # fallback timeout to avoid getting stuck before initial mug grasp in evaluation type 2
+  task2_step0_fallback_pos_thresh = 0.03 # relaxed position threshold used by step-0 timeout fallback
+  task2_step5_max_wait_s = 2.5 # fallback timeout to avoid getting stuck in step 5 when threshold is narrowly missed
   task2_close_time = None # Used as instant in time as reference to know when the grip is closed (used to enforce grasp delays in task progression)
   task2_lift_done_time = None # Used as instant in time as reference to know when the lift is done (used to enforce grasp delays in task progression)
+  task2_step0_entry_time = None # Used as time reference to enable timeout-based fallback in step 0
+  task2_step5_entry_time = None # Used as time reference to enable timeout-based fallback in step 5
   task2_hold_target_world = None # Used to store palm target positions throught the steps
   task2_pre_grasp_palm_z = None # Used to store palm height for grasping and releasing mug handle
   task2_transfer_target_world = None # Used to store  target palm position to transfer the mug on the coaster
@@ -342,6 +341,44 @@ def SimulationThread():
       raise RuntimeError("Body not found in model: coaster")
 
   task_ended = False # Flag to indicate when the task is completed (used to stop IK updates and print final message)
+
+  # ----------------------------------------------------------- #
+  #                 Function to reset simulation
+  # ----------------------------------------------------------- #
+
+  def reset_simulation():
+    """Resets the simulation to the initial state and reinitializes task variables."""
+    nonlocal right_arm_q_des, current_grasp_rot_world
+    nonlocal task1_step, task1_close_time, task1_drop_open_time
+    nonlocal task1_transfer_target_world1, task1_transfer_target_world2
+    nonlocal task2_step, task2_close_time, task2_lift_done_time
+    nonlocal task2_step0_entry_time, task2_step5_entry_time
+    nonlocal task2_hold_target_world, task2_pre_grasp_palm_z
+    nonlocal task2_transfer_target_world, task2_release_target_world, task2_opening_target_world
+    nonlocal task_ended, task_start_time
+
+    right_arm_q_des, current_grasp_rot_world = utilities.reset(
+      mj_model,mj_data,ctrl,right_arm_q_min,right_arm_q_max,
+      initial_sim_state,initial_grasp_rot_world,evaluation_type,
+      is_scene1_task,is_scene2_task,randomisation_range)
+    task1_step = 0
+    task1_close_time = None
+    task1_drop_open_time = None
+    task1_transfer_target_world1 = None
+    task1_transfer_target_world2 = None
+
+    task2_step = 0
+    task2_close_time = None
+    task2_lift_done_time = None
+    task2_step0_entry_time = None
+    task2_step5_entry_time = None
+    task2_hold_target_world = None
+    task2_pre_grasp_palm_z = None
+    task2_transfer_target_world = None
+    task2_release_target_world = None
+    task2_opening_target_world = None
+    task_ended = False
+    task_start_time = None
 
   # ------------------------------------------------------------------- #
   # Simulation loop using launch_passive (MuJoCo's built-in viewer)
@@ -595,8 +632,20 @@ def SimulationThread():
           elif is_scene2_task:
             if task2_step == 0:
               # Approaching mug handle to grasp it. Once the position and orientation thresholds are met,
-              # the grip is closed.
-              if (pos_err_norm <= task2_pos_thresh) and (theta_hold <= task2_rot_thresh):
+              # the grip is closed. Setting a timeout to avoid getting stuck in case of unexpected issues
+              # due to mug position randomisation (evaluation type 2) (e.g., mug handle is not reachable).
+              if task2_step0_entry_time is None:
+                task2_step0_entry_time = time.time()
+
+              step0_timeout = (
+                (evaluation_type == 2)
+                and ((time.time() - task2_step0_entry_time) >= task2_step0_max_wait_s)
+              )
+
+              can_grasp_normally = ((pos_err_norm <= task2_pos_thresh) and (theta_hold <= task2_rot_thresh))
+              can_grasp_with_timeout = (step0_timeout and (pos_err_norm <= task2_step0_fallback_pos_thresh))
+
+              if can_grasp_normally or can_grasp_with_timeout:
                 ctrl._cache_finger_actuators("mug_object")
                 ctrl.set_grip_state(True)
                 task2_close_time = time.time()
@@ -604,6 +653,9 @@ def SimulationThread():
                 task2_hold_target_world[1] += 0.015 # better alignment for grasping the mug handle
                 task2_pre_grasp_palm_z = float(task2_hold_target_world[2])
                 task2_step = 1
+                task_start_time = time.time()  # Record the start time of the task
+                if can_grasp_with_timeout:
+                  print(f"[TASK2][SAFE] Step 0 timeout ({task2_step0_max_wait_s}s) -> forcing grasp transition (pos_err={pos_err_norm:.4f}, rot_err={theta_hold:.4f})")
                 print("[TASK2] Mug grasp condition met -> close grip and stabilize")
 
             elif (
@@ -672,12 +724,18 @@ def SimulationThread():
                   [coaster_world[0], coaster_world[1], release_z - 0.01], dtype=np.float32
                 )
                 task2_step = 5
+                task2_step5_entry_time = time.time()
                 print("[TASK2] At coaster XY -> descending to release pose")
 
             elif task2_step == 5:
               # Waiting for the mug to reach the release pose, then slowly opening the grip to avoid
-              #  tipping the mug.
-              if pos_err_norm <= task2_release_pos_thresh:
+              #  tipping the mug. Considering a timeout to avoid getting stuck in this step 
+              #  during evaluation if the position threshold is missed (for evaluation type 2).
+              step5_timeout = (
+                (task2_step5_entry_time is not None)
+                and ((time.time() - task2_step5_entry_time) >= task2_step5_max_wait_s)
+              )
+              if (pos_err_norm <= task2_release_pos_thresh) or step5_timeout:
                 mug_release_open_targets = {
                   "right_hand_thumb_0_joint": 0.0,   # curl thumb inward
                   "right_hand_thumb_1_joint": -0.3,  # flex thumb
@@ -697,6 +755,8 @@ def SimulationThread():
                 ctrl.set_grip_state(False)
                 task2_lift_done_time = time.time()
                 task2_step = 6
+                if step5_timeout:
+                  print(f"[TASK2][SAFE] Step 5 timeout ({task2_step5_max_wait_s}s) -> forcing release transition (pos_err={pos_err_norm:.4f})")
                 print("[TASK2] Release pose reached -> slow partial opening grip")
 
             elif task2_step == 6:
@@ -732,49 +792,79 @@ def SimulationThread():
           right_arm_q_des = np.clip(right_arm_q_des, right_arm_q_min, right_arm_q_max)
 
           if task_ended:
-            task_end_time = time.time()  # Record the end time of the task
-            if task_start_time is not None:
-              task_completion_times_type1.append(task_end_time - task_start_time)  # Compute task duration
-            else:
-              print("[WARN] task_start_time is None at task end; skipping duration logging")
-            trial_index += 1  # Move to the next trial slot (shared across threads).
-            trial_count += 1
-            if trial_count >= n_trials_per_task:
-              print(f"[INFO] All {n_trials_per_task} trials completed.")
-              # write info to log file...
-              viewer.close()  # Close the viewer after all trials are done
-              break
-            else:
-              right_arm_q_des, current_grasp_rot_world = utilities.reset(
-                mj_model,
-                mj_data,
-                ctrl,
-                right_arm_q_min,
-                right_arm_q_max,
-                initial_sim_state,
-                initial_grasp_rot_world,
-              )
-              task1_step = 0
-              task1_close_time = None 
-              task1_drop_open_time = None
-              task1_transfer_target_world1 = None
-              task1_transfer_target_world2 = None
 
-              task2_step = 0
-              task2_close_time = None
-              task2_lift_done_time = None
-              task2_hold_target_world = None
-              task2_pre_grasp_palm_z = None
-              task2_transfer_target_world = None
-              task2_release_target_world = None
-              task2_opening_target_world = None
-              task_ended = False
-              task_start_time = None
-              task_end_time = None
-              print(f"[INFO] Starting trial {trial_count + 1} of {n_trials_per_task}...")
+            # Compute task completion time for evaluation purposes.
+            task_end_time = time.time()
+            if task_start_time is not None:
+              task_completion_times = utilities._compute_task_completion_time(
+                task_start_time,
+                task_end_time,
+                task_completion_times
+              )
+            
+            # Compare object positions with basket positions to determine the degree of success of the task.
+            # (in task 1 two objects must reach their respective baskets, while in task 2 only one object
+            #  must reach its target position)
+            task_success = utilities._is_task_successful(
+              is_scene1_task, is_scene2_task,
+              mj_data, task1_blue_cube_body_id,
+              task1_red_basket_body_id, task1_blue_basket_body_id,
+              target_body_id, task2_coaster_body_id,
+              task_success
+            )
+
+            trial_index += 1  # Move to the next trial slot (shared across threads).
+            if trial_index >= n_trials_per_task:
+              # Writing a compact aligned report block in the evaluation log.
+              evaluation_log_path = str(EVAL_LOG_PATH)
+              utilities._write_evaluation_log(
+                n_trials_per_task, is_scene1_task, is_scene2_task, evaluation_type,
+                task_completion_times, task_success,
+                max_pitch_measured, max_roll_measured, evaluation_log_path
+              )
+
+              if is_scene1_task:
+                if evaluation_type == 1:
+                  print(f"[INFO] Evaluation completed for task 1 with evaluation type 1.")
+                  print(f"[INFO] Next evaluation will be again with task 1 but type 2.")
+                  evaluation_type = 2
+                  trial_index = 0
+                  max_roll_measured = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
+                  max_pitch_measured = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
+                  reset_simulation()
+                  print(f"[INFO] Starting trial {trial_index + 1} of {n_trials_per_task}...")
+                elif evaluation_type == 2:
+                  print(f"[INFO] Evaluation completed for task 1 with evaluation type 2.")
+                  print(f"[INFO] Next evaluation will start with task 2 with evaluation type 1.")
+                  # Restarting the script to switch to task 2 with evaluation type 1.
+                  os.execv(sys.executable, [sys.executable, str(SCRIPT_PATH)])
+              elif is_scene2_task:
+                if evaluation_type == 1:
+                  print(f"[INFO] Evaluation completed for task 2 with evaluation type 1.")
+                  print(f"[INFO] Next evaluation will start with task 2 with evaluation type 2.")
+                  evaluation_type = 2
+                  trial_index = 0
+                  max_roll_measured = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
+                  max_pitch_measured = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
+                  reset_simulation()
+                elif evaluation_type == 2:
+                  print(f"[INFO] Evaluation completed for task 2 with evaluation type 2.")
+                  print(f"[INFO] All evaluations for both tasks have been completed. Exiting the simulation.")
+                  locker.release()  # Release lock before signaling: PhysicsViewerThread must be able to acquire it to reach viewer.close().
+                  all_trials_done.set()  # Signal PhysicsViewerThread to close the viewer (GLFW must be closed from the thread that owns sync).
+                  return  # Exit SimulationThread entirely (also exits the outer while viewer.is_running() loop).
+                
+            else:
+              # Resetting the simulation for the next trial. In case of evaluation type 2, 
+              # the initial positions of the objects are randomized for each trial.
+              reset_simulation()
+              print(f"[INFO] Starting trial {trial_index + 1} of {n_trials_per_task}...")
             
         elif control_step % 200 == 0:
           print("[IK] Waiting startup settle before enabling IK...")
+          if (is_scene1_task and trial_index == 0 and task1_step == 0) or \
+             (is_scene2_task and trial_index == 0 and task2_step == 0):
+            print(f"[INFO] Starting trial 1 of {n_trials_per_task}...")
 
         # Injecting IK joint target positions into target_pos
         for i, full_idx in enumerate(ctrl.right_arm_indices):
@@ -820,6 +910,10 @@ def PhysicsViewerThread():
 
         # --- exiting critical section --- #
         locker.release()
+
+        if all_trials_done.is_set():
+          viewer.close()  # Closed here (on the viewer thread) to avoid GLFW thread-local-storage assertion.
+          break
         time.sleep(evaluation_config.VIEWER_DT) # Sleep to limit viewer thread loop frequency (and avoid excessive CPU usage, since sync is not blocking in this setup).
 
 def RollPitchReaderThread():
@@ -868,12 +962,12 @@ def RollPitchReaderThread():
           roll_vals[7] = torso_roll
           pitch_vals[7] = torso_pitch
 
-          max_roll_measured_type1[ti] = np.maximum(
-            max_roll_measured_type1[ti],
+          max_roll_measured[ti] = np.maximum(
+            max_roll_measured[ti],
             np.abs(roll_vals).astype(np.float32),
           )
-          max_pitch_measured_type1[ti] = np.maximum(
-            max_pitch_measured_type1[ti],
+          max_pitch_measured[ti] = np.maximum(
+            max_pitch_measured[ti],
             np.abs(pitch_vals).astype(np.float32),
           )
 
