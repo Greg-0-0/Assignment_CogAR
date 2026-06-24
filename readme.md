@@ -78,12 +78,12 @@ The evaluation always follows this order:
 - 20 trials of task 2 scenario with randomised object positions.
 
 If the evaluation gets interrupted before it reaches the end, the next execution will start again from scenario 1 without randomised object positions.
-The results of the tests can be found at [simualte_python/quantitative_evaluation/evaluations.log](simualte_python/quantitative_evaluation/evaluations.log) as the evaluation gets executed.
+The results of the tests are printed at [path-to-results](simulate_python/quantitative_evaluation/evaluations.log) as the evaluation gets executed.
 A round of results is already present in the file, since it was used by myself to test the evaluation process in the first place.
 The log file **must not** be modified, the application automatically sets it up correctly to execute the next evaluation, even in case of abrupt interruptions of the execution.
 
 ### Metrics analyzed
-The testing process provides different information for evaluating the simulation. The type of data can be checked from the exemple already present in [evaluations.log](simualte_python/quantitative_evaluation/evaluations.log):
+The testing process provides different information for evaluating the simulation. The type of data can be checked from the exemple already present in [evaluations.log](simulate_python/quantitative_evaluation/evaluations.log):
 
 1. **Completion time** -> time taken to complete the corresponding trial.
 2. **Success value**:
@@ -138,6 +138,6 @@ The assignment is composed by different folders, each one with a precise functio
     - the root folder itself where there are the scripts to execute the simulation and the evaluation process as well as their corresponding configuration files.
     - [script_files](simulate_python/script_files/) in which there are the definitions of the classes for controlling the G1 robot movments, managing the balancing policy and additional useful functions.
     - [policy_resources](simulate_python/policy_resources/) that provides the necessary data to correcty load the balancing policy.
-    - [quantitative_evaluation](simualte_python/quantitative_evaluation/) which, as stated before, contains the log file with all the results of the carried out evaluations.
+    - [quantitative_evaluation](simulate_python/quantitative_evaluation/) which, as stated before, contains the log file with all the results of the carried out evaluations.
 
 ## G1 Robot model
