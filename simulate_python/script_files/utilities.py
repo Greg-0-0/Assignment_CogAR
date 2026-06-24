@@ -216,16 +216,16 @@ def _is_task_successful(is_scene1_task, is_scene2_task, mj_data, task1_blue_cube
     )
     if cube_in_red_basket and cylinder_in_blue_basket:
       print("[TASK1] Success-Success: Cube and cylinder are in the correct baskets.")
-      task_success.append("Success-Success")
+      task_success.append("Suc-Suc")
     elif cube_in_red_basket:
       print("[TASK1] Success-Failure: Cube is in the red basket, but cylinder is NOT in the blue basket.")
-      task_success.append("Success-Failure")
+      task_success.append("Suc-Fail")
     elif cylinder_in_blue_basket:
       print("[TASK1] Failure-Success: Cube is NOT in the red basket, but cylinder is in the blue basket.")
-      task_success.append("Failure-Success")
+      task_success.append("Fail-Suc")
     else:
       print("[TASK1] Failure-Failure: Neither cube nor cylinder are in the correct baskets.")
-      task_success.append("Failure-Failure")
+      task_success.append("Fail-Fail")
     
     return task_success
     
@@ -309,7 +309,7 @@ def _write_evaluation_log(n_trials_per_task, is_scene1_task, is_scene2_task, eva
     )
     left_label1 = f"Average completion time: {_fmt_val(average_completion_time, 4)} - "
     left_label2 = f"Average max pitch: {_fmt_val(np.mean(max_pitch_measured), 4)} - "
-    left_label3 = f"Average max roll: {_fmt_val(np.mean(max_roll_measured), 4)} - "
+    left_label3 = f"Average max roll: {_fmt_val(np.mean(max_roll_measured), 4)} {' - ' if is_scene2_task else ''}"
     left_label4 = f"Average position error(mug): {_fmt_val(np.mean(position_error_eval), 4)} " if is_scene2_task else ""
     left_label5 = ""
     if is_scene2_task:
@@ -317,10 +317,10 @@ def _write_evaluation_log(n_trials_per_task, is_scene1_task, is_scene2_task, eva
       left_label6 = f"Failure rate: {task_success.count('Failure') / len(task_success) * 100:.2f}% " if task_success else "Failure rate: n/a"
       left_label5 = f"{left_label5}{left_label6}"
     elif is_scene1_task:
-      left_label6 = f"Success-Success rate: {task_success.count('Success-Success') / len(task_success) * 100:.2f}% - " if task_success else "Success-Success rate: n/a"
-      left_label7 = f"Success-Failure rate: {task_success.count('Success-Failure') / len(task_success) * 100:.2f}% - " if task_success else "Success-Failure rate: n/a"
-      left_label8 = f"Failure-Success rate: {task_success.count('Failure-Success') / len(task_success) * 100:.2f}% - " if task_success else "Failure-Success rate: n/a"
-      left_label9 = f"Failure-Failure rate: {task_success.count('Failure-Failure') / len(task_success) * 100:.2f}% " if task_success else "Failure-Failure rate: n/a"
+      left_label6 = f"Success-Success rate: {task_success.count('Suc-Suc') / len(task_success) * 100:.2f}% - " if task_success else "Success-Success rate: n/a"
+      left_label7 = f"Success-Failure rate: {task_success.count('Suc-Fail') / len(task_success) * 100:.2f}% - " if task_success else "Success-Failure rate: n/a"
+      left_label8 = f"Failure-Success rate: {task_success.count('Fail-Suc') / len(task_success) * 100:.2f}% - " if task_success else "Failure-Success rate: n/a"
+      left_label9 = f"Failure-Failure rate: {task_success.count('Fail-Fail') / len(task_success) * 100:.2f}% " if task_success else "Failure-Failure rate: n/a"
       left_label5 = f"{left_label6}{left_label7}{left_label8}{left_label9}"
     left_label0 = f"{left_label1}{left_label2}{left_label3}{left_label4}"
     log_file.write(f"{left_label0}\n")

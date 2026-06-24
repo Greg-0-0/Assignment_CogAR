@@ -380,6 +380,7 @@ def SimulationThread():
     task2_release_target_world = None
     task2_opening_target_world = None
     task_ended = False
+
     task_start_time = None
 
   # ------------------------------------------------------------------- #
@@ -831,32 +832,34 @@ def SimulationThread():
                 max_pitch_measured, max_roll_measured, position_error_eval, evaluation_log_path
               )
 
+              print(f"[INFO] Evaluation completed for task {1 if is_scene1_task else 2} with evaluation type {evaluation_type}.")
+
               if is_scene1_task:
                 if evaluation_type == 1:
-                  print(f"[INFO] Evaluation completed for task 1 with evaluation type 1.")
                   print(f"[INFO] Next evaluation will be again with task 1 but type 2.")
                   evaluation_type = 2
                   trial_index = 0
                   max_roll_measured = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
                   max_pitch_measured = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
+                  task_completion_times = []
+                  task_success = []
                   reset_simulation()
                   print(f"[INFO] Starting trial {trial_index + 1} of {n_trials_per_task}...")
                 elif evaluation_type == 2:
-                  print(f"[INFO] Evaluation completed for task 1 with evaluation type 2.")
                   print(f"[INFO] Next evaluation will start with task 2 with evaluation type 1.")
                   # Restarting the script to switch to task 2 with evaluation type 1.
                   os.execv(sys.executable, [sys.executable, str(SCRIPT_PATH)])
               elif is_scene2_task:
                 if evaluation_type == 1:
-                  print(f"[INFO] Evaluation completed for task 2 with evaluation type 1.")
                   print(f"[INFO] Next evaluation will start with task 2 with evaluation type 2.")
                   evaluation_type = 2
                   trial_index = 0
                   max_roll_measured = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
                   max_pitch_measured = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
+                  task_completion_times = []
+                  task_success = []
                   reset_simulation()
                 elif evaluation_type == 2:
-                  print(f"[INFO] Evaluation completed for task 2 with evaluation type 2.")
                   print(f"[INFO] All evaluations for both tasks have been completed. Exiting the simulation.")
                   locker.release()  # Release lock before signaling: PhysicsViewerThread must be able to acquire it to reach viewer.close().
                   all_trials_done.set()  # Signal PhysicsViewerThread to close the viewer (GLFW must be closed from the thread that owns sync).
