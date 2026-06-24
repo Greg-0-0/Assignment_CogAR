@@ -130,3 +130,14 @@ Finally, some statistical data computed from each trial results:
     - **Failure rate**
 5. only for the second scenario:
     - **Average position error** (mug final placement)
+
+# Project structure
+The assignment is composed by different folders, each one with a precise function:
+- inside [g1](unitree_robots/g1/) there are defined the physical model for the G1 EDU Unitree robot and the scenarios for both tasks.
+- [simulate_python](simulate_python/) which comprises many sub parts:
+    - the root folder itself where there are the scripts to execute the simulation and the evaluation process as well as their corresponding configuration files.
+    - [script_files](simulate_python/script_files/) in which there are the definitions of the classes for controlling the G1 robot movments, managing the balancing policy and additional useful functions.
+    - [policy_resources](simulate_python/policy_resources/) that provides the necessary data to correcty load the balancing policy.
+    - [quantitative_evaluation](simualte_python/quantitative_evaluation/) which, as stated before, contains the log file with all the results of the carried out evaluations.
+
+## G1 Robot model
