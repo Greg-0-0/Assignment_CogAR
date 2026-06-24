@@ -3,7 +3,7 @@ import os
 import sys
 import time
 import threading
-import unitree_mujoco.simulate_python.startup_config as startup_config
+import startup_config
 import numpy as np
 from threading import Thread
 from pathlib import Path
