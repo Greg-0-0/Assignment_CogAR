@@ -1,3 +1,26 @@
+# Contents
+- [Introduction](#introduction)
+    - [Assignment instructions](#assignment-instructions)
+    - [Assignment explanation](#assignment-explanation)
+        - [Benchmark tasks description](#benchmark-tasks-description)
+- [Software requirements](#software-requirements)
+    - [Dependencies](#dependencies)
+    - [Installation](#installation)
+- [Execution guidlines](#execution-guidlines) 
+    - [Running the benchmark tasks](#running-the-benchmark-tasks)
+    - [Running the evaluations](#running-the-evaluations)
+        - [Metrics measured](#metrics-measured)
+- [Project structure](#project-structure) 
+    - [G1 Robot model](#g1-robot-model)
+    - [Balancing policy](#balancing-policy)
+    - [G1 controller and auxiliary functions](#g1-controller-and-auxiliary-functions)
+    - [Utilities](#utilities)
+    - [Simulation files](#simulation-files)
+        - [Simulation thread](#simulation-thread)
+        - [Physical thread](#physical-thread)
+        - [Roll and pitch reader thread](#roll-and-pitch-reader-thread)
+    - [Configuration files](#configuration-files)
+
 # Introduction
 G1 EDU Grasping and Manipulation Controller (SIMULATION)
 Student id: 5658523
@@ -29,7 +52,7 @@ The tasks are carried out using only one hand, since it is enough to reach the g
 2. **Object relocation**: the robot has to move a mug from an initial position to a coaster, grabbing its handle. Both items are placed on the table. Although it may seem a brief task to implement, the challenge of this sequence of actions lies in the delicacy the robot has to show while manipulating the object, to avoid tipping it, especially when placing it on top of the coaster. Indeed, given the particular shape of the item to grasp, the robot needs more precision to carry out the goal than it does in the previous problem.
 
 # Software requirements
-The code is written in python language using multiple modules and the physics simulator `mujoco` with its libraries. It is advised to use a python environment, as a lot of software is required to run the application.
+The code is written in python language using multiple modules and the physics simulator MuJoCo` with its libraries. It is advised to use a python environment, as a lot of software is required to run the application.
 
 ## Dependencies
 - Python >= 3.8
@@ -79,10 +102,10 @@ The evaluation always follows this order:
 
 If the evaluation gets interrupted before it reaches the end, the next execution will start again from scenario 1 without randomised object positions.
 The results of the tests are printed at [path-to-results](simulate_python/quantitative_evaluation/evaluations.log) as the evaluation gets executed.
-A round of results is already present in the file, since it was used by myself to test the evaluation process in the first place.
+A round of results is already present in the file, since it was used by the author to test the evaluation process in the first place. There is an additional set of results for task 2, since the evaluation was carried out trying two different randomisation factors with the goal to improve the performance.
 The log file **must not** be modified, the application automatically sets it up correctly to execute the next evaluation, even in case of abrupt interruptions of the execution.
 
-### Metrics analyzed
+### Metrics measured
 The testing process provides different information for evaluating the simulation. The type of data can be checked from the exemple already present in [evaluations.log](simulate_python/quantitative_evaluation/evaluations.log):
 
 1. **Completion time** -> time taken to complete the corresponding trial.
@@ -135,26 +158,96 @@ Finally, some statistical data computed from each trial results:
 The behavior of the robot depends on different parts of the assignment, each one with a precise role.
 For a more detalied analysis of the code, it is advised to directly consult the comments in the various files.
 
-<!-- 
-- inside [g1](unitree_robots/g1/) there are defined the physical model for the G1 EDU Unitree robot and the scenarios for both tasks.
-- [simulate_python](simulate_python/) which comprises many sub parts:
-    - the root folder itself where there are the scripts to execute the simulation and the evaluation process as well as their corresponding configuration files.
-    - [script_files](simulate_python/script_files/) in which there are the definitions of the classes for controlling the G1 robot movments, managing the balancing policy and additional useful functions.
-    - [policy_resources](simulate_python/policy_resources/) that provides the necessary data to correcty load the balancing policy.
-    - [quantitative_evaluation](simulate_python/quantitative_evaluation/) which, as stated before, contains the log file with all the results of the carried out evaluations.
-    -->
-
 ## G1 Robot model
 Inside [g1](unitree_robots/g1/) folder there are defined the physical model for the G1 EDU Unitree robot and the scenarios for both tasks:
 - [assets](unitree_robots/g1/assets/) provides the 3D models for each joint of the robot, including the hands.
-- [g1.xml](unitree_robots/g1/g1.xml) defines the physical links between the different joints, their geometry, the type of actuator used for each on of them and sensors for measuring joint positions, veocities and inclinations. The file uses *position actuators* which differ from *motor actuators*, since the former excpets as input target joint positions and delegates to the `mujoco` engine the computation of the necessary control signals to reach that goal, while the latter interprets the signals recevied as torques.
+- [g1.xml](unitree_robots/g1/g1.xml) defines the physical links between the different joints, their geometry, the type of actuator used for each on of them and sensors for measuring joint positions, veocities and inclinations. The file uses *position actuators* which differ from *motor actuators*, since the former excpets as input target joint positions and delegates to the MuJoCo engine the computation of the necessary control signals to reach that goal, while the latter interprets the signals recevied as torques.
 - [scene1.xml](unitree_robots/g1/scene1.xml) and [scene2.xml](unitree_robots/g1/scene2.xml) implements respectively the scenarios for the first and second task, like the definition of the items to be manipulated by the robot and the table.
 
 ## Balancing policy
-The [policy_resources](simulate_python/policy_resources/) folder provides the necessary data to correcty load the *walker* policy, which balances the robot, maintaining its standing posture. This policy was imported from the git hub repository https://github.com/luckyrobots/g1-manipulation-challenge/tree/main and adapted to the assignment needs.
+The [policy_resources](simulate_python/policy_resources/) folder provides the necessary data to correcty load the *walker* policy, which balances the robot, maintaining its standing posture. This policy was imported from the git hub repository [g1-manipulation-challenge](https://github.com/luckyrobots/g1-manipulation-challenge/tree/main) and adapted to the assignment needs.
 In particular, the model takes in input information from sensors like joint positions, gyroscope values and foot pressure, and returns velocity commands for the 29 joints defined in [model_config.json](simulate_python/policy_resources/model_config.json) and mapped to the corresponding joint names decleared in [g1.xml](unitree_robots/g1/g1.xml).
  The model is split into two files:
 - *walker.onnx* : stores the layers of the neural network with weights, other than metadata.
 - *walker.onnx.data* : the actual values of the parameters that represent the outputs (torque, angles applied to the joints)
 
+The policy is loaded thanks to the *ONNXPolicy* class defined at [path-to-resource](simulate_python/script_files/ONNXPolicy.py).
+
 In the previous project, the "walking" behavior was achieved by tilting the torso either backward or foreward, causing the policy to balance the robot, thus making it effectively walk in the process. However, in this assignment the policy is exclusively used to maintain the robot in a crouched standing position and to stabilise its posture during object manipulation.
+
+## G1 controller and auxiliary functions
+As explained previously in this document, the robot receives two different control signals:
+- the *walker* policy that stabilise its posture.
+- inverse kinematics to compute the target positions for the right arm and hand joints, which allow to achieve the necessary motions for actions like reaching and grasping.
+
+The two control strategies drive different joints, so there is no contrast between them. However, both are applied on the robot thanks to the methods of the class [G1Controller](simulate_python/script_files/G1Controller.py).
+In particular, this class provides:
+- methods to build mappings from joint names to indeces to access important information like joint positions and velocities.
+- helper functions to retrieve necessary information for the inverse kinematics:
+    - position and orientation of the base frame, which is identified by the robot pelvis.
+    - positions and velocities of all joints.
+    - position and orientation of the robot end-effector, which is the right hand palm.
+    - complete jacobian matrices of the end-effector with respect to the base.
+- method to compute the necessary cartesian velocities to apply on the end-effector to reach the goal position and orientation
+- functions to control the joints of the right hand to implement the closing and opening action.
+- step function and actual control function to apply on each joint the target positions during the simulation.
+
+The implementation of the inverse kinematics required to the user is only partial, since MuJoCo itself already computes the geometric and kinematic model of the robot thanks to the information provided in [g1.xml](unitree_robots/g1/g1.xml), thus providing the jacobian matrices of any joint relative to a world frame.
+The missing parts consist in:
+- the computation of the *misalignment problem* and the *distance zeroing problem* to retrieve the cartesian velocities of the end-effector.
+- the application of the *inverse jacobian relation* to obtain the desired joint velocities.
+- integration over time of the joint velocities obtained to retrieve the target joint positions.
+
+## Utilities
+In the file [Utilities](simulate_python/script_files/utilities.py) are present useful functions for various applications such as:
+- setting up an additional inertia for the robot joints to achieve a more realistic and less twitchy behavior when aggressive commands are applied (imported from [g1-manipulation-challenge](https://github.com/luckyrobots/g1-manipulation-challenge/tree/main) repo).
+- computing dumped pseudoinverse of a jacobian matrix to implement the *inverse jacobian relation*.
+- resetting the simulation and retrieving its information, which is used during evaluation.
+
+## Simulation files
+The core of the project are the [startup.py](simulate_python/startup.py) and [evaluation.py](simulate_python/evaluation.py) files, which both implement the simulation logic and the physical rendering of the robot.
+The only difference is that the code inside [evaluation.py](simulate_python/evaluation.py) has been agumented to allow the execution of multiple consequent trials for both scenarios, whereas [startup.py](simulate_python/startup.py) can only execute once per user input, providing an alternative lighter computation process.
+
+The execution of scripts is divided in threads that run concurrently, thus a guarding mechanism is present to ensure consistency of shared data.
+
+### Simulation thread
+This thread represents the pivotal part of the project: task logic.
+Both tasks are broken into multiple steps, and each one is carried out inside this section making use of the resources provided by all the other folders and files in the project.
+For both benchmark tasks, the robot spawns at the beginning of the simulation with its right arm and hand in a specific position ready to grasp the first object, then the position of its right arm and hand joints are adjusted, using inverse kinematics, to reach the final objective. The manipulation processes follow sepcific sequence of actions, each one with a separate sub-goal.
+Steps of task 1:
+1. grasping the red cylinder and lifiting the right arm.
+2. moving the arm above the blue basket.
+3. opening the right hand, thus dropping the red cylinder inside the blue basket.
+4. moving the hand on top of the blue cube.
+5. grasping the blue cub and stabilising the grip.
+6. lifting the cube.
+7. trasnfering the cube over the red basket.
+8. realising the cube inside the red basket.
+
+Steps of task 2:
+1. grasping the handle of the mug without making it fall.
+2. lifting the arm with the grabbed mug.
+3. translating the arm upon the coaster.
+4. lowering the arm and the mug on top of the coaster.
+5. slowly releasing the grasp on the mug handle.
+
+For either task, each step that involves reaching a certain target position, especially to grasp an object, is cleared only when a certain position and occasionally orientation error threshold is surpassed. These values have been tweaked accordingly, so that these conditions do not take too much time to be verified, but they still ensure that the objects are grabbed with a firm grip.
+After a condition is met, and so a new step gets accessed, the target position gets updated and saved in specific variables, which are then used to apply commands to the various robot actuators.
+
+### Physical thread
+This thread updates the visual physics of the robot model, synchronizing itself with the simulation loop through a shared *viewer* of the scene. Indeed, to execute this operation, a guarding mechanism is necessary.
+
+The code also applies a custom camera configuration make the observation of the task executions more comfortable.
+
+### Roll and pitch reader thread
+This execution unit is only present inside [evaluation.py](simulate_python/evaluation.py), since it computes data necessary for the evaluation.
+
+More precisely, it measures at each cycle the roll and pitch of the joints previously mentioned in the section [Metrics measured](#metrics-measured).
+
+## Configuration files
+These files are used to properly link the definition of the task scenarios with the logic of the simualtion:
+- [startup_config.py](simulate_python/startup_config.py) is used to configure the simulation environment for [startup.py](simulate_python/startup.py).
+- [evaluation_config.py](simulate_python/evaluation_config.py) prepares the scene every time [evaluation.py](simulate_python/evaluation.py) starts a set of trials to evaluate a different task.
+
+# Author
+Daneri Gregorio - Robotics student at UNIGE.

@@ -6,7 +6,6 @@ import threading
 import numpy as np
 from threading import Thread
 from pathlib import Path
-from datetime import datetime
 
 import mujoco
 from mujoco import viewer
@@ -189,7 +188,7 @@ viewer = mujoco.viewer.launch_passive(mj_model, mj_data)
 # Lists of elements with 8 values each (left hip, left knee, left ankle, right hip, right knee, right ankle,
 #  waist, torso) to store maximum roll and pitch measured during each trial (used for evaluation type 1 and 2)
 # (computed in a separate thread for highest frequency of measurements)
-n_trials_per_task = 20 # Number of trials to execute for each task and evaluation type
+n_trials_per_task = 2 # Number of trials to execute for each task and evaluation type
 max_roll_measured = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
 max_pitch_measured = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
 trial_index = 0 # Shared current trial slot/counter for measurement and simulation threads.
@@ -841,8 +840,8 @@ def SimulationThread():
                   trial_index = 0
                   max_roll_measured = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
                   max_pitch_measured = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
-                  task_completion_times = []
-                  task_success = []
+                  task_completion_times.clear()
+                  task_success.clear()
                   reset_simulation()
                   print(f"[INFO] Starting trial {trial_index + 1} of {n_trials_per_task}...")
                 elif evaluation_type == 2:
@@ -856,8 +855,8 @@ def SimulationThread():
                   trial_index = 0
                   max_roll_measured = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
                   max_pitch_measured = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
-                  task_completion_times = []
-                  task_success = []
+                  task_completion_times.clear()
+                  task_success.clear()
                   reset_simulation()
                 elif evaluation_type == 2:
                   print(f"[INFO] All evaluations for both tasks have been completed. Exiting the simulation.")
@@ -904,7 +903,7 @@ def SimulationThread():
       log_file.write(f"[ORDER] Execute task_1\n")
 
 
-# Main thread for rendering and synchronizing with the physics thread, also used to set up the camera view.
+# Main thread for rendering and synchronizing with the simulation thread, also used to set up the camera view.
 def PhysicsViewerThread():
     
     # Retrieving right shoulder position for camera setup. 
@@ -942,9 +941,9 @@ def PhysicsViewerThread():
           break
         time.sleep(evaluation_config.VIEWER_DT) # Sleep to limit viewer thread loop frequency (and avoid excessive CPU usage, since sync is not blocking in this setup).
 
+# Thread to read roll and pitch of joints from the IMU sensor and save the highest value for later evaluation.
+# Joints read are (8): left hip, left knee, left ankle, right hip, right knee, right ankle, waist, torso
 def RollPitchReaderThread():
-    # Thread to read roll and pitch of joints from the IMU sensor and save the highest value for later evaluation.
-    # Joints read are (8): left hip, left knee, left ankle, right hip, right knee, right ankle, waist, torso
     global trial_index
 
     # Mapping order of joints is fixed and matches the layout of arrays used to store the roll and pitch maxima values:

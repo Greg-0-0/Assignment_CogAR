@@ -398,25 +398,6 @@
   </worldbody>
 
 <actuator>
-
-    <!-- 
-    <motor name="right_shoulder_pitch" joint="right_shoulder_pitch_joint" ctrlrange="-25 25" />
-    <motor name="right_shoulder_roll" joint="right_shoulder_roll_joint" ctrlrange="-25 25" />
-    <motor name="right_shoulder_yaw" joint="right_shoulder_yaw_joint" ctrlrange="-25 25" />
-    <motor name="right_elbow" joint="right_elbow_joint" ctrlrange="-25 25" />
-    <motor name="right_wrist_roll" joint="right_wrist_roll_joint" ctrlrange="-25 25" />
-    <motor name="right_wrist_pitch" joint="right_wrist_pitch_joint" ctrlrange="-5 5" />
-    <motor name="right_wrist_yaw" joint="right_wrist_yaw_joint" ctrlrange="-5 5" />
-
-    
-    <motor name="right_hand_thumb_0_joint" joint="right_hand_thumb_0_joint" ctrlrange="-2.45 2.45"/>
-    <motor name="right_hand_thumb_1_joint" joint="right_hand_thumb_1_joint" ctrlrange="-1.0472 0.724312"/>
-    <motor name="right_hand_thumb_2_joint" joint="right_hand_thumb_2_joint" ctrlrange="-1.74533 0"/>
-    <motor name="right_hand_middle_0_joint" joint="right_hand_middle_0_joint" ctrlrange="0 1.5708"/>
-    <motor name="right_hand_middle_1_joint" joint="right_hand_middle_1_joint" ctrlrange="0 1.74533"/>
-    <motor name="right_hand_index_0_joint" joint="right_hand_index_0_joint" ctrlrange="0 1.5708"/>
-    <motor name="right_hand_index_1_joint" joint="right_hand_index_1_joint" ctrlrange="0 1.74533"/>
-    -->
     
     <position class="g1" name="right_shoulder_pitch_joint" joint="right_shoulder_pitch_joint" kp="14.251" kv="0.907"/>
     <position class="g1" name="right_shoulder_roll_joint" joint="right_shoulder_roll_joint" kp="14.251" kv="0.907"/>

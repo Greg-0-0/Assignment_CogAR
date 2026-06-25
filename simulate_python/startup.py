@@ -3,7 +3,6 @@ import os
 import sys
 import time
 import threading
-import startup_config
 import numpy as np
 from threading import Thread
 from pathlib import Path
@@ -14,6 +13,7 @@ from mujoco import viewer
 from script_files.ONNXPolicy import ONNXPolicy
 from script_files.G1Controller import G1Controller
 import script_files.utilities as utilities 
+import startup_config
 
 # Providing fallback for SCRIPT_PATH and SCRIPT_DIR in case __file__ is not unavailable.
 # This way both instructions work.
@@ -696,7 +696,7 @@ def SimulationThread():
       control_step += 1
       sim_time += mj_model.opt.timestep
 
-# Main thread for rendering and synchronizing with the physics thread, also used to set up the camera view.
+# Main thread for rendering and synchronizing with the simulation thread, also used to set up the camera view.
 def PhysicsViewerThread():
     
     # Retrieving right shoulder position for camera setup. 
