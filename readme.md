@@ -132,12 +132,29 @@ Finally, some statistical data computed from each trial results:
     - **Average position error** (mug final placement)
 
 # Project structure
-The assignment is composed by different folders, each one with a precise function:
+The behavior of the robot depends on different parts of the assignment, each one with a precise role.
+For a more detalied analysis of the code, it is advised to directly consult the comments in the various files.
+
+<!-- 
 - inside [g1](unitree_robots/g1/) there are defined the physical model for the G1 EDU Unitree robot and the scenarios for both tasks.
 - [simulate_python](simulate_python/) which comprises many sub parts:
     - the root folder itself where there are the scripts to execute the simulation and the evaluation process as well as their corresponding configuration files.
     - [script_files](simulate_python/script_files/) in which there are the definitions of the classes for controlling the G1 robot movments, managing the balancing policy and additional useful functions.
     - [policy_resources](simulate_python/policy_resources/) that provides the necessary data to correcty load the balancing policy.
     - [quantitative_evaluation](simulate_python/quantitative_evaluation/) which, as stated before, contains the log file with all the results of the carried out evaluations.
+    -->
 
 ## G1 Robot model
+Inside [g1](unitree_robots/g1/) folder there are defined the physical model for the G1 EDU Unitree robot and the scenarios for both tasks:
+- [assets](unitree_robots/g1/assets/) provides the 3D models for each joint of the robot, including the hands.
+- [g1.xml](unitree_robots/g1/g1.xml) defines the physical links between the different joints, their geometry, the type of actuator used for each on of them and sensors for measuring joint positions, veocities and inclinations. The file uses *position actuators* which differ from *motor actuators*, since the former excpets as input target joint positions and delegates to the `mujoco` engine the computation of the necessary control signals to reach that goal, while the latter interprets the signals recevied as torques.
+- [scene1.xml](unitree_robots/g1/scene1.xml) and [scene2.xml](unitree_robots/g1/scene2.xml) implements respectively the scenarios for the first and second task, like the definition of the items to be manipulated by the robot and the table.
+
+## Balancing policy
+The [policy_resources](simulate_python/policy_resources/) folder provides the necessary data to correcty load the *walker* policy, which balances the robot, maintaining its standing posture. This policy was imported from the git hub repository https://github.com/luckyrobots/g1-manipulation-challenge/tree/main and adapted to the assignment needs.
+In particular, the model takes in input information from sensors like joint positions, gyroscope values and foot pressure, and returns velocity commands for the 29 joints defined in [model_config.json](simulate_python/policy_resources/model_config.json) and mapped to the corresponding joint names decleared in [g1.xml](unitree_robots/g1/g1.xml).
+ The model is split into two files:
+- *walker.onnx* : stores the layers of the neural network with weights, other than metadata.
+- *walker.onnx.data* : the actual values of the parameters that represent the outputs (torque, angles applied to the joints)
+
+In the previous project, the "walking" behavior was achieved by tilting the torso either backward or foreward, causing the policy to balance the robot, thus making it effectively walk in the process. However, in this assignment the policy is exclusively used to maintain the robot in a crouched standing position and to stabilise its posture during object manipulation.
