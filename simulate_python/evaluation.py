@@ -188,7 +188,7 @@ viewer = mujoco.viewer.launch_passive(mj_model, mj_data)
 # Lists of elements with 8 values each (left hip, left knee, left ankle, right hip, right knee, right ankle,
 #  waist, torso) to store maximum roll and pitch measured during each trial (used for evaluation type 1 and 2)
 # (computed in a separate thread for highest frequency of measurements)
-n_trials_per_task = 2 # Number of trials to execute for each task and evaluation type
+n_trials_per_task = 20 # Number of trials to execute for each task and evaluation type
 max_roll_measured = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
 max_pitch_measured = [np.zeros(8, dtype=np.float32) for _ in range(n_trials_per_task)]
 trial_index = 0 # Shared current trial slot/counter for measurement and simulation threads.
