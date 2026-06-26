@@ -88,7 +88,7 @@ Once the task is chosen, the simulation starts and prints various information in
 - information related to the **right-hand status** (`OPEN` or `CLOSED`).
 
 ## Running the evaluations
-The repository also provides a script to run a series of tests to evaluate certain **metrics**. The evaluation consists of **40 trials** for each task, half of which run with fixed object positions, while the other half apply a randomization to their spawning locations. These variations are applied only to the positions of the objects that must be grasped by the robot.
+The repository also provides a script to run a series of tests to evaluate certain **metrics**. The evaluation consists of **40 trials** for each task, half of which run with fixed object positions, while the other half apply a randomized offset to their spawning locations (the offset is limited in a fixed range). These variations are applied only to the positions of the objects that must be grasped by the robot.
 
 It is possible to increase the number of trials in the corresponding script. However, changing any other parameter may significantly impact performance and correct execution.
 The command to run evaluation:
@@ -106,7 +106,7 @@ If the evaluation is interrupted before reaching the end, the next execution wil
 
 The results of the tests are printed to [path-to-results](simulate_python/quantitative_evaluation/evaluations.log) as the evaluation is executed.
 
-A round of results is already present in the file, since it was used by the author to test the evaluation process in the first place. There is an additional set of results for Task 2, since the evaluation was carried out using two different randomization factors with the goal of improving performance.
+A round of results is already present in the file, since it was used by the author to test the evaluation process in the first place. There is an additional set of results for Task 2, since the evaluation was carried out using a lower randomization factors with the goal of improving performance.
 
 The log file **must not** be modified. The application automatically configures it correctly to execute the next evaluation, even in the event of abrupt interruptions during execution.
 
